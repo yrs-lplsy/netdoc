@@ -10,6 +10,7 @@ services:
       - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql  # 首启自动创建 vector 扩展
   redis:
     image: redis:7
     container_name: kbrag-redis
