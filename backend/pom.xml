@@ -24,6 +24,8 @@
     <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-actuator</artifactId></dependency>
     <dependency><groupId>org.postgresql</groupId><artifactId>postgresql</artifactId></dependency>
     <dependency><groupId>com.pgvector</groupId><artifactId>pgvector</artifactId><version>0.1.6</version></dependency>
+    <!-- Hibernate 官方 vector 模块:实体类映射 vector 列用(替代 com.pgvector 的 Hibernate 集成;com.pgvector 保留给 Task 5 原生 JDBC 查询绑定) -->
+    <dependency><groupId>org.hibernate.orm</groupId><artifactId>hibernate-vector</artifactId><version>6.5.3.Final</version></dependency>
     <!-- LangChain4j OpenAI 兼容协议 -->
     <dependency><groupId>dev.langchain4j</groupId><artifactId>langchain4j-open-ai</artifactId><version>${langchain4j.version}</version></dependency>
     <!-- 中文分词 -->
