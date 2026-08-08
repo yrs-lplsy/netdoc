@@ -10,9 +10,9 @@ import java.util.List;
 @RestController
 @RequestMapping("/api/documents")
 public class DocumentController {
-    @Autowired DocumentService documentService;
-    @Autowired DocumentRepository documents;
-    @Autowired DocumentChunkRepository chunks;
+    @Autowired private DocumentService documentService;
+    @Autowired private DocumentRepository documents;
+    @Autowired private DocumentChunkRepository chunks;
 
     @PostMapping
     public ResponseEntity<?> upload(@RequestParam("file") MultipartFile file) {

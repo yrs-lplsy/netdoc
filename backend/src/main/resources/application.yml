@@ -2,6 +2,8 @@ server:
   port: 9000   # 避开 80 系列(8080 被 rpki-system 占用,8081 易混淆),用独立端口
 
 spring:
+  config:
+    import: optional:file:.env[.properties]   # 从 .env 读配置;optional=文件不存在也不报错
   datasource:
     url: jdbc:postgresql://localhost:5433/kbrag
     username: kbrag

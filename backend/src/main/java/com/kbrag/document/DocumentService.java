@@ -1,21 +1,35 @@
 package com.kbrag.document;
 
-import com.kbrag.document.parser.*;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.util.List;
+
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
-import java.io.ByteArrayInputStream;
-import java.io.IOException;
-import java.util.List;
+import com.kbrag.ai.EmbeddingService;
+import com.kbrag.ai.Tokenizer;
+import com.kbrag.document.parser.Chunk;
+import com.kbrag.document.parser.DocumentParser;
+import com.kbrag.document.parser.HeadingAwareChunker;
+import com.kbrag.document.parser.MarkdownParser;
+import com.kbrag.document.parser.PdfParser;
+import com.kbrag.document.parser.WordParser;
 
 @Service
 public class DocumentService {
     @Autowired DocumentRepository documents;
     @Autowired DocumentChunkRepository chunks;
     @Autowired @Lazy DocumentService self;  // 自注入代理：同类内部调用不走 Spring 代理，@Async 会退化成同步
+
+    @Autowired
+    private EmbeddingService embeddingService;
+
+    @Autowired
+    private Tokenizer tokenizer;
 
     private final HeadingAwareChunker chunker;
     private static final int MAX_SIZE = 800, MIN_SIZE = 400, OVERLAP = 100;
@@ -51,6 +65,13 @@ public class DocumentService {
                 e.tokenCount = c.content().length(); // 中英混排近似，Phase 3 换真实 token 统计
                 return e;
             }).toList();
+            // 向量化 + 关键词分词
+            List<String> contents = parsed.stream().map(Chunk::content).toList();
+            List<float[]> vectors = embeddingService.embed(contents);
+            for (int i = 0; i < entities.size(); i++) {
+                entities.get(i).embedding = vectors.get(i);   // float[] 直接赋值(hibernate-vector 映射)
+                entities.get(i).segmentedText = tokenizer.segment(entities.get(i).content);
+            }
             chunks.saveAll(entities);
             doc.status = DocumentStatus.READY;
         } catch (Exception ex) {
