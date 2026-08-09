@@ -4,6 +4,8 @@
 >
 > 本项目按 HANDOFF 协作协议执行:**用户自己动手写代码**,助手负责任务拆解、验收、报错拆解、机械性修复。任务推进用 executing-plans 逐任务验收。
 > 双线并行约定(2026-08-09):**Python 侧基础功能优先**(新功能先跑通),**Java 侧工程化同步推进**(Java 基础功能 Phase 1 已完成,限流/语义缓存/可观测即时插入);Task 5/8/9 为 Java 工程化,与 Python 任务(Task 1-4/6/7)可并行开发。
+>
+> **对齐说明(2026-08-10)**:本计划对应新 spec《2026-08-10-agentic-rag-enterprise-design.md》第 3 周里程碑(Agent 基础 + 工具端点 + 限流)。与本计划相关的 spec 变更:① 工具调用幂等键(本计划 Task 2 已含,spec §9 双层防线);② 认证/多知识库/KG/语义缓存一致性 → Plan B(2026-08-10-plan-b,第 4 周);③ 评测/知识包/部署 → Plan C(第 5-6 周)。Task 8 语义缓存的一致性增强(kb 命名空间/版本戳)由 Plan B 改造。
 
 **Goal:** 交付 Python Agent 服务(FastAPI + LangGraph 五节点 + 全链路 SSE 透传)的同时,Java 侧工程优化同步推进(用户级令牌桶限流、语义缓存、每轮 span 可观测)——"Python 管思考、Java 管执行"的完整 Agent 故事,工程化指标可量化、可面试讲。
 
@@ -200,15 +202,19 @@ import java.time.LocalDateTime;
 
 /**
  * Agent 工具调用审计日志(spec §6 tool_call_log)。
+ * idempotentKey = conversationId + ":" + agentStepId:幂等键,唯一索引防重复执行
+ * (spec §9 双层防线:Python 内存层 + Java DB 层)。
  */
 @Data
 @Entity
-@Table(name = "tool_call_log")
+@Table(name = "tool_call_log",
+       uniqueConstraints = @UniqueConstraint(name = "uk_tool_call_idem", columnNames = "idempotent_key"))
 public class ToolCallLog {
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
     private Long conversationId;
     private String toolName;
+    private String idempotentKey;   // conversationId:agentStepId;网络重试/Agent 重复调用时幂等返回
     @Column(columnDefinition = "text")
     private String inputJson;
     @Column(columnDefinition = "text")
@@ -223,8 +229,11 @@ public class ToolCallLog {
 package com.kbrag.tool;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import java.util.Optional;
 
-public interface ToolCallLogRepository extends JpaRepository<ToolCallLog, Long> {}
+public interface ToolCallLogRepository extends JpaRepository<ToolCallLog, Long> {
+    Optional<ToolCallLog> findFirstByIdempotentKey(String idempotentKey);   // 幂等校验
+}
 ```
 
 - [ ] **Step 3: 创建 ToolController(三个工具端点 + 全量审计)**
@@ -244,10 +253,11 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * Agent 工具端点(spec §4.1 tool-service):供 Python Agent 服务反向调用。
- * 每次调用全量落库 tool_call_log(安全审计)。
+ * 每次调用全量落库 tool_call_log(安全审计)+ 幂等键防重复执行(spec §9)。
  */
 @RestController
 @RequestMapping("/api/agent/tools")
@@ -259,22 +269,26 @@ public class ToolController {
     private final ObjectMapper om = new ObjectMapper();
 
     @PostMapping("/search")
-    public List<SearchResult> search(@RequestBody ToolRequest req) {
+    public Object search(@RequestBody ToolRequest req) {
+        Optional<Object> dup = idempotent(req);
+        if (dup.isPresent()) return dup.get();
         long t0 = System.currentTimeMillis();
         try {
             List<SearchResult> hits = retriever.search(req.query(), req.topK() == 0 ? 5 : req.topK());
-            log("search_kb", req, hits.size() + " hits", t0, true);
+            log("search_kb", req, hits.size() + " hits", t0, true, req);
             return hits;
         } catch (Exception e) {
-            log("search_kb", req, e.getMessage(), t0, false);
+            log("search_kb", req, e.getMessage(), t0, false, req);
             throw e;
         }
     }
 
     @PostMapping("/get-doc-detail")
-    public Map<String, Object> getDocDetail(@RequestBody Map<String, Long> body) {
+    public Object getDocDetail(@RequestBody ToolRequest req) {
+        Optional<Object> dup = idempotent(req);
+        if (dup.isPresent()) return dup.get();
         long t0 = System.currentTimeMillis();
-        Long docId = body.get("docId");
+        Long docId = req.docId();
         try {
             Document doc = documents.findById(docId).orElseThrow();
             List<DocumentChunk> chunkList = chunks.findByDocId(docId);
@@ -282,31 +296,48 @@ public class ToolController {
                     "id", doc.getId(), "title", doc.getTitle(), "status", doc.getStatus(),
                     "chunks", chunkList.stream().map(c -> Map.of(
                             "id", c.getId(), "content", c.getContent(), "headingPath", c.getHeadingPath())).toList());
-            log("get_doc_detail", Map.of("docId", docId), chunkList.size() + " chunks", t0, true);
+            log("get_doc_detail", Map.of("docId", docId), chunkList.size() + " chunks", t0, true, req);
             return result;
         } catch (Exception e) {
-            log("get_doc_detail", Map.of("docId", docId), e.getMessage(), t0, false);
+            log("get_doc_detail", Map.of("docId", docId), e.getMessage(), t0, false, req);
             throw e;
         }
     }
 
     @PostMapping("/get-stats")
-    public Map<String, Object> getStats() {
+    public Object getStats(@RequestBody ToolRequest req) {
+        Optional<Object> dup = idempotent(req);
+        if (dup.isPresent()) return dup.get();
         long t0 = System.currentTimeMillis();
         try {
             long docCount = documents.count();
             long chunkCount = chunks.count();
-            log("get_stats", Map.of(), docCount + " docs / " + chunkCount + " chunks", t0, true);
+            log("get_stats", Map.of(), docCount + " docs / " + chunkCount + " chunks", t0, true, req);
             return Map.of("docCount", docCount, "chunkCount", chunkCount);
         } catch (Exception e) {
-            log("get_stats", Map.of(), e.getMessage(), t0, false);
+            log("get_stats", Map.of(), e.getMessage(), t0, false, req);
             throw e;
         }
     }
 
-    private void log(String tool, Object input, String output, long t0, boolean ok) {
+    /** 幂等校验:conversationId+agentStepId 已执行过 → 直接返回上次结果,不重复执行。 */
+    private Optional<Object> idempotent(ToolRequest req) {
+        if (req.conversationId() == null || req.agentStepId() == null) return Optional.empty();
+        String key = req.conversationId() + ":" + req.agentStepId();
+        Optional<ToolCallLog> prev = logs.findFirstByIdempotentKey(key);
+        if (prev.isPresent()) {
+            return Optional.of(Map.of("idempotent", true, "output", prev.get().getOutputSummary()));
+        }
+        return Optional.empty();
+    }
+
+    private void log(String tool, Object input, String output, long t0, boolean ok, ToolRequest req) {
         ToolCallLog l = new ToolCallLog();
         l.setToolName(tool);
+        if (req.conversationId() != null) l.setConversationId(req.conversationId());
+        if (req.conversationId() != null && req.agentStepId() != null) {
+            l.setIdempotentKey(req.conversationId() + ":" + req.agentStepId());
+        }
         l.setInputJson(write(input));
         l.setOutputSummary(output);
         l.setLatencyMs((int) (System.currentTimeMillis() - t0));
@@ -319,9 +350,11 @@ public class ToolController {
         catch (Exception e) { return "{}"; }
     }
 
-    public record ToolRequest(String query, int topK) {}
+    public record ToolRequest(String query, Integer topK, Long docId, Long conversationId, Integer agentStepId) {}
 }
 ```
+
+> Python 侧 JavaClient 每次工具调用带上 `conversation_id` 与递增的 `agent_step_id`(单轮图执行内计数);Java 幂等命中时返回 `{"idempotent":true,"output":"上次结果摘要"}`——网络重试/Agent 重复调用不再重复执行。
 
 - [ ] **Step 4: 创建 AgentHealthController(Java 侧健康端点,顺带检查 Python)**
 
@@ -530,17 +563,24 @@ from app.config import JAVA_BASE_URL, TOOL_TIMEOUT_SECONDS
 
 
 class JavaClient:
-    """反向调用 Java 工具端点;记录已执行调用,重复调用检测。"""
+    """反向调用 Java 工具端点;记录已执行调用,重复调用检测。
+    conversation_id 非空时,每次调用携带递增 agentStepId → Java 侧幂等键(spec §9 双层防线)。"""
 
-    def __init__(self, base_url: str = JAVA_BASE_URL, timeout: float = TOOL_TIMEOUT_SECONDS):
+    def __init__(self, base_url: str = JAVA_BASE_URL, timeout: float = TOOL_TIMEOUT_SECONDS,
+                 conversation_id: int | None = None):
         self.base_url = base_url
         self.timeout = timeout
+        self.conversation_id = conversation_id
+        self._step = 0
         self._seen: set[tuple[str, str]] = set()
 
     def _call(self, tool: str, payload: dict) -> dict:
         key = (tool, json.dumps(payload, sort_keys=True, ensure_ascii=False))
         if key in self._seen:
             raise RuntimeError(f"工具 {tool} 已用相同参数调用过,已跳过重复调用")
+        if self.conversation_id is not None:
+            self._step += 1
+            payload = {**payload, "conversationId": self.conversation_id, "agentStepId": self._step}
         with httpx.Client(timeout=self.timeout) as client:
             r = client.post(f"{self.base_url}/api/agent/tools/{tool}", json=payload)
             r.raise_for_status()
@@ -960,6 +1000,7 @@ from typing import Optional, TypedDict
 class AgentState(TypedDict, total=False):
     question: str              # 原始问题
     history: list              # 滑动窗口历史 [{role, content}]
+    conversation_id: Optional[int]  # 会话 ID(Java 透传,工具幂等键用)
     rewritten: Optional[str]   # 改写后问题
     needs_retrieval: bool      # Router 决策
     contexts: list             # 检索到的片段 [{chunkId, docId, headingPath, content}]
@@ -1215,7 +1256,7 @@ async def tools_node(state: AgentState, chat=None, client=None) -> AgentState:
     from app.tools import TOOL_SCHEMAS, execute_tool
 
     chat = chat or chat_model
-    client = client or JavaClient()
+    client = client or JavaClient(conversation_id=state.get("conversation_id"))
     contexts = list(state.get("contexts") or [])
 
     # 阶段 1:LLM 携带工具 schema 决定调用哪些工具(DeepSeek Function Calling)
@@ -1477,6 +1518,7 @@ def build_input(req: AgentChatRequest) -> dict:
     return {
         "question": req.message,
         "history": req.history[-10:],
+        "conversation_id": req.conversation_id,   # 工具幂等键上下文
         "needs_retrieval": True,
         "contexts": [],
         "answer": "",
@@ -2195,3 +2237,4 @@ git add -A && git commit -m "feat: per-turn rag spans and stats endpoint"
 - Java `AgentChatService.stream` 签名与 ChatController 调用一致;`Message`/`Conversation` 为 Lombok getter/setter(Phase 1 已统一)
 - `app.agent.base-url` 为 Java 侧唯一配置点(AgentHealthController 与 AgentChatService 同源,application.yml);`app.rate-limit`/`app.cache` 各自独立配置块
 - TokenBucket/RateLimiter、CosineSimilarity/ChatCacheService 均"纯算法类可单测 + 存储层薄封装"模式,与 Phase 1 的 RrfFusion/HeadingAwareChunker 一致
+- **幂等契约(2026-08-10 对齐 spec §9)**:Python `JavaClient` 携带 `conversationId + agentStepId`(单轮图内递增)→ Java `ToolController.idempotent()` 查 `tool_call_log.idempotent_key` 唯一索引,命中返回 `{"idempotent":true,"output":上次摘要}`;`conversation_id` 经 AgentChatRequest → build_input → AgentState → tools_node 全链路传递,测试的 FakeJavaClient 不涉及该字段(conversation_id 为空时跳过幂等)
