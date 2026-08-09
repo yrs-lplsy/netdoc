@@ -11,3 +11,7 @@ python/.venv/
 __pycache__/
 *.pyc
 .pytest_cache/
+python/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
