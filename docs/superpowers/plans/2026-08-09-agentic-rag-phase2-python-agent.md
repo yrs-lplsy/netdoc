@@ -6,7 +6,7 @@
 
 **Goal:** 3 周内交付 Python Agent 服务:FastAPI + LangGraph 五节点(查询改写 → 检索决策 Router → 工具调用 → 生成 → 忠实度自检)+ Java 工具端点 `/api/agent/tools/*` + 全链路 SSE 透传,形成"Python 管思考、Java 管执行"的完整 Agent 故事。
 
-**Architecture:** Python 独立服务(`python/` 目录,FastAPI,端口 **8001**)承载 LangGraph 有状态图;图节点通过 HTTP 反向调用 Java 的工具端点(search_kb/get_doc_detail/get_stats)完成检索与溯源;Java 的 `/api/chat` 网关用 WebClient 把 SSE 事件原样透传给浏览器;Java 负责会话落库与历史回放,Python 负责 Agent 编排与 LLM 调用。
+**Architecture:** Python 独立服务(`python/` 目录,FastAPI,端口 **9100**)承载 LangGraph 有状态图;图节点通过 HTTP 反向调用 Java 的工具端点(search_kb/get_doc_detail/get_stats)完成检索与溯源;Java 的 `/api/chat` 网关用 WebClient 把 SSE 事件原样透传给浏览器;Java 负责会话落库与历史回放,Python 负责 Agent 编排与 LLM 调用。
 
 **Tech Stack:** Python 3.10+、FastAPI、uvicorn、sse-starlette、LangGraph(0.2+)、langchain-openai(OpenAI 兼容协议)、httpx、python-dotenv、pytest、pytest-asyncio;Java 侧新增 spring-boot-starter-webflux(仅用 WebClient)。
 
@@ -14,7 +14,7 @@
 
 - LLM:DeepSeek,base_url `https://api.deepseek.com/v1`,model `deepseek-chat`;Embedding:硅基流动 BGE-M3,base_url `https://api.siliconflow.cn/v1`,model `BAAI/bge-m3`,维度 1024(与 Phase 1 一致)
 - API Key 只从环境变量读取:复用 `backend/.env`(DEEPSEEK_API_KEY / SILICONFLOW_API_KEY),禁止写进代码/git
-- 端口:Java 9000、Python **8001**、PG 5433、Redis 6379;**8080 被 rpki-system 占用,永远别用**
+- 端口:Java 9000、Python **9100**、PG 5433、Redis 6379;**8080 被 rpki-system 占用,永远别用**;Python 与 Java 同属 9 系列(隔开 100),完全避开 80 系列防混淆(与 Java 选 9000 同理)
 - SSE 事件名统一:`answer`(delta)/`source`/`done`/`error` + Agent 过程事件 `rewrite`/`router`/`tool`(可选,前端忽略未知事件),事件体带递增 `seq`
 - 防护(与 spec §8 一致):最大步数 8(recursion_limit)、工具超时 10s(httpx timeout)、重复工具调用检测、错误信息自然语言化回喂 LLM
 - 检索无结果:rerank 阈值判定 Phase 3 做;Phase 2 沿用"检索为空 → 明确拒答/反问",不硬答
@@ -36,7 +36,7 @@
 
 | 任务 | 内容 | 验收 |
 |---|---|---|
-| Task 1 | Python 服务骨架(FastAPI + 配置 + /health) | `curl :8001/health` 返回 UP |
+| Task 1 | Python 服务骨架(FastAPI + 配置 + /health) | `curl :9100/health` 返回 UP |
 | Task 2 | Java Agent 工具端点(search/get-doc-detail/get-stats + tool_call_log + /api/agent/health) | curl 三个工具端点可用,tool_call_log 落库 |
 | Task 3 | Python LLM/Embedding 客户端封装 | pytest mock 通过 + 手动真调通 chat/embedding |
 | Task 4 | Python 工具层(JavaApiClient + 工具 schema + 超时/重复检测) | Python 能真调通 Java 工具端点 |
@@ -146,8 +146,8 @@ EOF
 
 cd python && pytest -q
 # 期望:1 passed
-uvicorn app.main:app --port 8001
-curl http://localhost:8001/health   # {"status":"UP"}
+uvicorn app.main:app --port 9100
+curl http://localhost:9100/health   # {"status":"UP"}
 ```
 
 - [ ] **Step 6: 提交**
@@ -156,7 +156,7 @@ curl http://localhost:8001/health   # {"status":"UP"}
 cd ../agentic-rag && git add python/ && git commit -m "feat: python agent service skeleton with health check"
 ```
 
-**验收**:`pytest` 全绿;`curl :8001/health` 返回 `{"status":"UP"}`。
+**验收**:`pytest` 全绿;`curl :9100/health` 返回 `{"status":"UP"}`。
 
 ---
 
@@ -340,7 +340,7 @@ public class AgentHealthController {
     private final WebClient webClient;
 
     public AgentHealthController(WebClient.Builder builder,
-                                 @Value("${app.agent.base-url:http://localhost:8001}") String agentBaseUrl) {
+                                 @Value("${app.agent.base-url:http://localhost:9100}") String agentBaseUrl) {
         this.webClient = builder.baseUrl(agentBaseUrl).build();
     }
 
@@ -361,7 +361,7 @@ public class AgentHealthController {
 
 ```yaml
   agent:
-    base-url: http://localhost:8001   # Python Agent 服务地址
+    base-url: http://localhost:9100   # Python Agent 服务地址
 ```
 
 - [ ] **Step 5: 验证**
@@ -1233,7 +1233,7 @@ git add -A && git commit -m "feat: langgraph five-node agent graph with guards"
 
 **Interfaces:**
 - Consumes: `run_agent`(Task 5)、`AgentState`、Phase 1 的 `MessageRepository`/`ConversationRepository`
-- Produces: `POST http://localhost:8001/agent/chat {message, conversation_id, history} → SSE(answer/sources/done/error)`;Java `POST /api/chat` 行为变为:透传 Python SSE 事件,`done` 后落库 message(行为与 Phase 1 前端兼容)
+- Produces: `POST http://localhost:9100/agent/chat {message, conversation_id, history} → SSE(answer/sources/done/error)`;Java `POST /api/chat` 行为变为:透传 Python SSE 事件,`done` 后落库 message(行为与 Phase 1 前端兼容)
 
 - [ ] **Step 1: 创建 sse.py**
 
@@ -1379,7 +1379,7 @@ public class AgentChatService {
     public AgentChatService(WebClient.Builder builder,
                             MessageRepository messages,
                             ConversationRepository conversations,
-                            @Value("${app.agent.base-url:http://localhost:8001}") String agentBaseUrl) {
+                            @Value("${app.agent.base-url:http://localhost:9100}") String agentBaseUrl) {
         this.webClient = builder.baseUrl(agentBaseUrl).build();
         this.messages = messages;
         this.conversations = conversations;
@@ -1502,7 +1502,7 @@ cd ../python && pytest -q             # 期望:全绿
 
 ```bash
 # 终端 A:cd backend && mvn spring-boot:run      (Java 9000)
-# 终端 B:cd python && uvicorn app.main:app --port 8001   (Agent 8001)
+# 终端 B:cd python && uvicorn app.main:app --port 9100   (Agent 9100)
 # 终端 C:
 curl -N -X POST http://localhost:9000/api/chat -H "Content-Type: application/json" \
   -d '{"message":"OpenWrt 无线配置的安装步骤是什么?"}'

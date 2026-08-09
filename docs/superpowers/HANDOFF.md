@@ -57,8 +57,8 @@ GitHub: https://github.com/yrs-lplsy/netdoc(公开)
 
 # 4. 环境要点(WSL2,勿乱改)
 
-- 端口:应用 **9000**;PG **5433**(kbrag-pg 容器,vector 扩展已建);Redis 6379;
-  **8080 被另一项目 rpki-system 占用,永远别用**
+- 端口:应用 **9000**;Python Agent **9100**(Phase 2);PG **5433**(kbrag-pg 容器,vector 扩展已建);Redis 6379;
+  **8080 被另一项目 rpki-system 占用,永远别用**;Python 与 Java 同属 9 系列避开 80 系列防混淆
 - Maven:程序在 `/mnt/d/...`,但 `~/.m2/settings.xml` 已把仓库指向 Linux 的
   `~/.m2/repository`(阿里云镜像)——不要改动
 - API Key:`backend/.env`(DEEPSEEK_API_KEY / SILICONFLOW_API_KEY)
