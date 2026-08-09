@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8"><title>NetDoc 网络设备技术文档问答</title>
+<style>body{font-family:sans-serif;max-width:720px;margin:40px auto}pre{white-space:pre-wrap;background:#f5f5f5;padding:12px;border-radius:6px}#src{color:#888;font-size:13px}</style>
+</head>
+<body>
+<h2>企业知识库问答</h2>
+<input id="q" style="width:70%;padding:8px" placeholder="例如：安装步骤是什么？"/>
+<button onclick="ask()">提问</button>
+<div id="out"></div>
+<script>
+async function ask() {
+  const q = document.getElementById('q').value;
+  const out = document.getElementById('out');
+  out.innerHTML = '<pre></pre><div id="src"></div>';
+  const resp = await fetch('/api/chat', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({message: q})
+  });
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '', eventName = '';
+  while (true) {
+    const {done, value} = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, {stream: true});
+    let idx;
+    while ((idx = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, idx).trim();
+      buffer = buffer.slice(idx + 1);
+      if (line.startsWith('event:')) eventName = line.slice(6).trim();
+      else if (line.startsWith('data:')) {
+        const ev = JSON.parse(line.slice(5));
+        if (eventName === 'answer' && ev.data) out.querySelector('pre').textContent += ev.data;
+        else if (eventName === 'source')
+          document.getElementById('src').textContent = '来源: ' + ev.data.map(s => s.title).join(' / ');
+      }
+    }
+  }
+}
+</script>
+</body>
+</html>

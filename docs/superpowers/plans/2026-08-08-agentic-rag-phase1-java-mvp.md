@@ -23,6 +23,7 @@
 - 项目根：`agentic-rag/`（新目录，独立 git 仓库）；`.gitignore` 排除 `target/`、`*.env`、`.idea/`、`.vscode/`
 - 中文分词决策：用 jieba（纯 Java 库）在入库时预分词存 `segmented_text`，PG 侧 `to_tsvector('simple', segmented_text)` 生成列做关键词检索——避免 zhparser/pg_jieba 需要定制镜像的部署复杂度
 - 本机 5432 被占用：PG 端口映射 `5433:5432`，本计划内所有连接串与 `psql` 命令统一用 **5433**（与 application.yml 一致）
+- 服务端口用 **9000**（本机 8080 被 rpki-system 占用，避开 80 系列防混淆；计划内 `curl localhost:8080` 均按 9000 执行，Task 7 演示页/README 用 9000）
 
 ## 与 spec 的偏差说明
 
@@ -276,8 +277,10 @@ public class Document {
 ```java
 package com.kbrag.document;
 
-import com.pgvector.PGvector;
 import jakarta.persistence.*;
+import org.hibernate.annotations.Array;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 @Entity
 @Table(name = "document_chunk")
@@ -290,14 +293,17 @@ public class DocumentChunk {
     public String content;
     public Integer tokenCount;
     public String headingPath;
+    // Hibernate 官方 vector 模块映射(BGE-M3 维度 1024);不要用 com.pgvector.PGvector 做实体字段,否则按 bytea 绑定导致插入失败
     @Column(columnDefinition = "vector(1024)")
-    public PGvector embedding;
+    @JdbcTypeCode(SqlTypes.VECTOR)
+    @Array(length = 1024)
+    public float[] embedding;
     @Column(columnDefinition = "text")
     public String segmentedText;
 }
 ```
 
-> 实体字段直接 public 简化（个人项目风格）。`embedding` 用 `com.pgvector.PGvector`，`segmentedText` 存 jieba 分词后的空格分隔文本。
+> 实体字段直接 public 简化（个人项目风格）。`embedding` 用 `float[]` + `hibernate-vector` 模块（Hibernate 6.4+ 官方方案，README 明确"use this instead of com.pgvector.pgvector"）；`com.pgvector` 依赖保留，Task 5 原生 JDBC 绑定向量参数仍用它。`segmentedText` 存 jieba 分词后的空格分隔文本。pom.xml 需补依赖：`org.hibernate.orm:hibernate-vector:6.5.3.Final`（对齐 Spring Boot 3.3.5 管理的 Hibernate 版本）。
 
 - [ ] **Step 2: 编写 Repository**
 
@@ -554,6 +560,7 @@ public interface DocumentParser {
 ```java
 package com.kbrag.document.parser;
 
+import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
 import java.io.IOException;
@@ -562,7 +569,8 @@ import java.io.InputStream;
 public class PdfParser implements DocumentParser {
     @Override
     public String parse(InputStream in, String filename) throws IOException {
-        try (PDDocument doc = PDDocument.load(in)) {
+        // PDFBox 3.x 已移除 PDDocument.load(InputStream)，统一走 Loader.loadPDF
+        try (PDDocument doc = Loader.loadPDF(in)) {
             return new PDFTextStripper().getText(doc);
         }
     }
@@ -644,15 +652,18 @@ public class DocumentService {
         doc.title = file.getOriginalFilename();
         doc.uploader = 0L;
         documents.save(doc);
-        self.processAsync(doc.id, file);   // 必须经代理调用，@Async 才生效
+        // MultipartFile 背后是 Tomcat 临时文件，请求结束后会被删除；
+        // 必须先同步读成字节数组再交给异步线程，否则 @Async 线程会读不到文件（FileNotFoundException）
+        byte[] bytes = file.getBytes();
+        self.processAsync(doc.id, bytes, file.getOriginalFilename());   // 必须经代理调用，@Async 才生效
         return doc;
     }
 
     @Async
-    public void processAsync(Long docId, MultipartFile file) {
+    public void processAsync(Long docId, byte[] content, String filename) {
         Document doc = documents.findById(docId).orElseThrow();
         try {
-            String text = pickParser(file.getOriginalFilename()).parse(file.getInputStream(), file.getOriginalFilename());
+            String text = pickParser(filename).parse(new ByteArrayInputStream(content), filename);
             List<Chunk> parsed = chunker.chunk(text);
             List<DocumentChunk> entities = parsed.stream().map(c -> {
                 DocumentChunk e = new DocumentChunk();
@@ -699,6 +710,7 @@ import java.util.List;
 public class DocumentController {
     @Autowired DocumentService documentService;
     @Autowired DocumentRepository documents;
+    @Autowired DocumentChunkRepository chunks;
 
     @PostMapping
     public ResponseEntity<?> upload(@RequestParam("file") MultipartFile file) {
@@ -844,7 +856,7 @@ public class EmbeddingService {
 List<String> contents = parsed.stream().map(Chunk::content).toList();
 List<float[]> vectors = embeddingService.embed(contents);
 for (int i = 0; i < entities.size(); i++) {
-    entities.get(i).embedding = new com.pgvector.PGvector(vectors.get(i));
+    entities.get(i).embedding = vectors.get(i);   // float[]，配合 hibernate-vector 映射
     entities.get(i).segmentedText = tokenizer.segment(entities.get(i).content);
 }
 ```
@@ -1381,9 +1393,10 @@ async function ask() {
 - [ ] **Step 2: 编写 README.md**
 
 ```markdown
-# Agentic RAG 企业知识库问答系统
+# NetDoc：网络设备技术文档智能问答系统
 
-Java 后端（Spring Boot 3 + pgvector）+ Python Agent 服务（Phase 2）的企业知识库问答系统。
+Java 后端（Spring Boot 3 + pgvector）+ Python Agent 服务（Phase 2）的网络设备技术文档问答系统。
+知识库素材：OpenWrt/路由器技术文档 + 个人部署踩坑笔记（与端侧路由器 AI Agent 项目组成"云边一套"叙事）。
 
 ## 架构
 （Mermaid 图，内容对齐 spec §3）
@@ -1439,6 +1452,11 @@ git add -A && git commit -m "feat: demo page and readme for phase 1 MVP"
 | P3-1 | `PGvector.of(float[])` API 存疑（0.1.6 无此工厂方法） | 改为构造器 `new PGvector(vec)` |
 | P3-2 | 计划内 5432 与实测 5433 不一致 | 全计划连接串/psql/application.yml 同步 5433 |
 | P3-3 | docs/superpowers 位于 git 仓库外 | Task 1 Step 8 拷入仓库一并提交 |
+| P4-1 | DocumentController 的 delete 用了 `chunks` 但漏声明注入字段 | 补 `@Autowired DocumentChunkRepository chunks;` |
+| P4-2 | PdfParser 用 `PDDocument.load(InputStream)`，PDFBox 3.x 已删除该方法 | 改用 `Loader.loadPDF(in)` |
+| P4-3 | `@Async` 线程直接读 `MultipartFile`：请求结束 Tomcat 删临时文件，异步线程 FileNotFoundException | 请求线程内先 `file.getBytes()`，异步方法改收 `byte[]` + 文件名 |
+| P4-4 | 实体用 `com.pgvector.PGvector` 字段，Hibernate 按 bytea 绑定，插入报 "expression is of type bytea" | 改用 Hibernate 官方 `hibernate-vector` 模块：`float[]` + `@JdbcTypeCode(SqlTypes.VECTOR)` + `@Array(length=1024)`；pom 补依赖 |
+| P4-5 | `errorMessage` 默认 varchar(255)，长错误信息存不进去导致失败状态丢失 | 实体加 `@Column(columnDefinition = "text")` |
 
 ## Self-Review 记录
 

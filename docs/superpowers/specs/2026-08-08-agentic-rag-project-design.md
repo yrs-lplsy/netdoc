@@ -25,7 +25,9 @@
 
 ### 1.3 项目形态（已确认）
 
-**Agentic RAG 企业知识库问答系统**：Java 主后端（Spring Boot 3）+ Python 独立 Agent 服务（FastAPI + LangGraph），前后端分离双服务架构，共享 PostgreSQL+pgvector 与 Redis。
+**NetDoc（网络设备技术文档智能问答系统）**：Java 主后端（Spring Boot 3）+ Python 独立 Agent 服务（FastAPI + LangGraph），前后端分离双服务架构，共享 PostgreSQL+pgvector 与 Redis。
+
+> 命名决策（2026-08-09）：定位从泛化的"企业知识库"收窄为"网络设备技术文档"垂直领域——与作者端侧路由器 AI Agent 项目（MT799X / OpenWrt / RK NPU）形成"云边一套"的组合叙事；知识库素材用 OpenWrt 文档与个人部署踩坑记录（一手、唯一，面试可讲细节）。
 
 ### 1.4 选型论证：为什么不是纯 Python / 纯 Java（面试直接可用）
 
@@ -262,7 +264,7 @@ eval_result(id BIGSERIAL PK, case_id BIGINT, strategy JSONB /*分块/检索参�
 
 **投后端（大模型方向）版**：
 ```
-企业知识库智能问答系统（Agentic RAG）｜ 2026.08 - 至今
+NetDoc：网络设备技术文档智能问答系统（Agentic RAG）｜ 2026.08 - 至今
 - 技术栈：Spring Boot 3 / LangChain4j / PostgreSQL+pgvector / Redis / FastAPI / LangGraph / DeepSeek / BGE-M3
 - 核心内容：
   · 高并发对话网关：SSE 流式透传、用户级令牌桶限流、语义缓存（命中率 xx%）、重试与熔断降级
@@ -273,7 +275,7 @@ eval_result(id BIGSERIAL PK, case_id BIGINT, strategy JSONB /*分块/检索参�
 
 **投 Agent 应用开发版**：
 ```
-企业知识库智能问答系统（Agentic RAG）｜ 2026.08 - 至今
+NetDoc：网络设备技术文档智能问答系统（Agentic RAG）｜ 2026.08 - 至今
 - 技术栈：FastAPI / LangGraph / Spring Boot / pgvector / DeepSeek / BGE-M3 / SSE / Redis
 - 核心内容：
   · LangGraph 五节点编排：查询改写 → 检索决策 Router → 工具调用 → 生成（带引用）→ 忠实度自检
@@ -308,7 +310,7 @@ eval_result(id BIGSERIAL PK, case_id BIGINT, strategy JSONB /*分块/检索参�
 - 技术博客 ×3：①混合检索与分块实践 ②LangGraph Agentic RAG 编排 ③RAG 评测体系搭建
 - 部署上线（云服务器 Docker Compose 一键起），简历附 demo 链接
 - 3 分钟演示脚本：提问 → 流式回答 → 点击引用 → 多轮追问 → 点踩 → 看评测报告
-- 知识库素材用「设备用户手册 + 硬件技术文档」：面试带出硬件理解（差异化彩蛋）
+- 知识库素材用「网络设备技术文档（OpenWrt/路由器手册）+ 个人部署踩坑笔记」：面试带出硬件与网络实践（差异化彩蛋，素材一手唯一）
 
 ---
 

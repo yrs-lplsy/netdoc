@@ -13,7 +13,7 @@
 - **业务完善**:Phase 2 —— Python Agent 服务(FastAPI + LangGraph)
 - **工程完善**:Phase 3 —— 限流/语义缓存/可观测/评测体系
 
-用户是硬件专业本科生,正在秋招(Java 后端大模型方向 + AI Agent 应用开发),
+用户是广州大学网络空间安全专业的硕士生,正在秋招(Java 后端大模型方向 + AI Agent 应用开发),
 一切决策以"可面试讲深、可量化、可演示"为优先。
 
 # 0. 必读文档(开工先读,以它们为准)
@@ -86,4 +86,4 @@ GitHub: https://github.com/yrs-lplsy/netdoc(公开)
 
 1. 调 using-superpowers 开场 → 读 spec + plan → `git status`
 2. 对齐账目:提交 Task 6 遗留、docs 同步、config.import、Lombok 定案
-3. 和用户确认:先收尾 Task 7(README/演示/简历)还是直接开 Phase 2
+3. 开启 Phase 2
