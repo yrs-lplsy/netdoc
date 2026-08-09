@@ -18,10 +18,17 @@
 
 # 0. 必读文档(开工先读,以它们为准)
 
-1. `docs/superpowers/specs/2026-08-08-agentic-rag-project-design.md`
-   —— 架构/数据模型/API/评测/简历模板的权威定义
+1. `docs/superpowers/specs/2026-08-10-agentic-rag-enterprise-design.md`
+   —— **企业级 RAG 中台权威设计**(2026-08-10 定稿:认证/多库/KG/三路融合/评测/排期)。
+   2026-08-08 版 spec 为 Phase 1 历史依据,冲突处以新版为准
 2. `docs/superpowers/plans/2026-08-08-agentic-rag-phase1-java-mvp.md`
    —— Phase 1 实施计划,文末"修订记录"P0-P4 记录了全部已踩过的坑,严禁重复踩
+3. `docs/superpowers/plans/2026-08-09-agentic-rag-phase2-python-agent.md`(Plan A)
+   —— Python Agent 基础 + Java 工程化(限流/缓存/可观测),第 3 周里程碑
+4. `docs/superpowers/plans/2026-08-10-agentic-rag-plan-b-auth-kg.md`(Plan B)
+   —— RBAC 认证 + 多知识库 + 知识图谱 + 缓存一致性,第 4 周里程碑
+5. `docs/superpowers/plans/2026-08-10-agentic-rag-plan-c-eval-release.md`(Plan C)
+   —— 评测 + 对照实验 + 知识包导出 + 部署,第 5-6 周里程碑
 
 项目定位:垂直"网络设备技术文档"(OpenWrt/路由器手册),与用户的端侧路由器
 AI Agent 项目(MT799X/OpenWrt/RK NPU)组成"云边一套"叙事。
@@ -43,17 +50,16 @@ GitHub: https://github.com/yrs-lplsy/netdoc(公开)
   ④底层原理(面试可讲的人话版本)
 - 用户说"我自己来改"时只讲解、不改文件;不替用户写业务代码
 
-# 3. 现状快照(2026-08-09)
+# 3. 现状快照(2026-08-10)
 
-- 已验收:Task 1 骨架/环境/GitHub 仓库 · Task 2 数据模型+pgvector/HNSW ·
-  Task 3 解析+标题感知分块(TDD 3/3) · Task 4 BGE-M3 向量化+jieba 分词 ·
-  Task 5 混合检索+RRF(TDD 2/2) · Task 6 SSE 流式对话(已端到端验证)
-- git:最新提交 `9a02383`(Task 5);Task 6 的 chat 包、pom.xml(Lombok)、
-  static/index.html 未提交 → 先 `git status` 整理提交
-- 待决:① application.yml 的 `spring.config.import` 未加(.env 未真正生效,
-  当前靠 shell export)② Lombok 风格二选一(public 字段 或 private+注解,勿混用)
-- 未完成:Task 7 收尾(README 全文 / 演示端到端验证 / 简历第一波投递)
-- 仓库内 docs/ 副本已过期 → `cp -r ../docs/superpowers docs/` 后提交
+- 已完成:Phase 1 全部(文档管线/混合检索/SSE);Plan A 已开工——Task 1
+  (Python 骨架)进行中:requirements.txt + venv(Py3.13)已就绪,.gitignore 已补;
+  config.py/main.py/test_health.py 待写待验收
+- 设计定稿:企业级 RAG 中台(spec 2026-08-10);Plan A/B/C 三份计划已提交,
+  按周推进(8/16 Agent 演示 → 8/23 认证+KG 演示 → 8/30 指标 → 9/6 上线投递)
+- 已对齐:docs 同步、README(NetDoc 叙事)、Lombok 统一 @Data、端口 9100、
+  工具幂等键(Plan A Task 2 已含)、豆包 4 条优化(三路 RRF/缓存一致性/幂等/K8s 路径)落 spec
+- 待办:Task 1 收尾 → Plan A Task 2-9 → Plan B → Plan C;简历正式批(9/6 前)
 
 # 4. 环境要点(WSL2,勿乱改)
 
@@ -67,23 +73,22 @@ GitHub: https://github.com/yrs-lplsy/netdoc(公开)
   查库:`psql postgresql://kbrag:kbrag123@localhost:5433/kbrag`
 - 演示页:`http://localhost:9000/`(先重启应用让 static/index.html 生效)
 
-# 5. 路线图与开局动作
+# 5. 路线图与执行体系(2026-08-10 更新)
 
-## 近期(Phase 2,业务完善)
+按 spec 第 11 节排期,三份 plan 顺序推进(每份独立可演示):
 
-- Python Agent 服务:FastAPI + LangGraph 五节点(查询改写 → 检索决策 Router
-  → 工具调用 search_kb/get_doc_detail/get_stats → 生成 → 忠实度自检)
-- Java 侧工具端点 `/api/agent/tools/*`;全链路 SSE 透传(Java SseEmitter ↔
-  Python FastAPI SSE);防护(最大步数/超时/重复调用检测)
+- **Plan A(第 3 周,8/16 里程碑)**:Python Agent 五节点 + Java 工具端点(幂等)
+  + SSE 全链路 + 令牌桶限流 + 语义缓存 + 可观测
+- **Plan B(第 4 周,8/23 里程碑)**:RBAC0 认证(JWT+两层权限+切面)+ 多知识库
+  + 知识图谱(构建/三路融合/可视化)+ 缓存一致性
+- **Plan C(第 5-6 周,8/30 与 9/6 里程碑)**:评测(120 条/Recall@10/MRR/忠实度
+  + 图谱对照实验)+ 可观测 token 成本 + 知识包导出(端侧)+ 全栈部署 + 简历
 
-## 工程完善(Phase 3)
-
-- 用户级令牌桶限流(Redis)、语义缓存(embedding 相似度 >0.95)、
-  可观测(每轮 span:各阶段耗时/Token 数)、评测体系(120 条评测集 +
-  Recall@10/MRR/LLM-as-judge 忠实度)、rerank A/B 实验
+协作模式:用户自己写代码,助手教学/验收/答疑;报错四要素拆解;机械性修复
+(配置行/文档同步)助手直接做。
 
 ## 开局第一件事
 
-1. 调 using-superpowers 开场 → 读 spec + plan → `git status`
-2. 对齐账目:提交 Task 6 遗留、docs 同步、config.import、Lombok 定案
-3. 开启 Phase 2
+1. 调 using-superpowers 开场 → 读 spec(2026-08-10)+ 当前 plan → `git status`
+2. 对齐账目(按 HEAD 快照核对遗留)
+3. 从当前 plan 的 in_progress Task 继续
