@@ -17,6 +17,7 @@
 
 - LLM:DeepSeek,base_url `https://api.deepseek.com/v1`,model `deepseek-chat`;Embedding:硅基流动 BGE-M3,base_url `https://api.siliconflow.cn/v1`,model `BAAI/bge-m3`,维度 1024(与 Phase 1 一致)
 - API Key 只从环境变量读取:复用 `backend/.env`(DEEPSEEK_API_KEY / SILICONFLOW_API_KEY),禁止写进代码/git
+- Python 依赖用 uv 管理(pyproject.toml + uv.lock):`uv sync` 安装、`uv run pytest/uvicorn/python` 执行——不用 pip/venv 手动激活;本计划内所有 Python 命令均带 `uv run` 前缀
 - 端口:Java 9000、Python **9100**、PG 5433、Redis 6379;**8080 被 rpki-system 占用,永远别用**;Python 与 Java 同属 9 系列(隔开 100),完全避开 80 系列防混淆(与 Java 选 9000 同理)
 - SSE 事件名统一:`answer`(delta)/`source`/`done`/`error` + Agent 过程事件 `rewrite`/`router`/`tool`(可选,前端忽略未知事件),事件体带递增 `seq`
 - 防护(与 spec §8 一致):最大步数 8(recursion_limit)、工具超时 10s(httpx timeout)、重复工具调用检测、错误信息自然语言化回喂 LLM
@@ -54,7 +55,7 @@
 ### Task 1: Python 服务骨架
 
 **Files:**
-- Create: `python/requirements.txt`
+- Create: `python/pyproject.toml`(uv 依赖管理:声明依赖,uv.lock 锁版本可复现构建)
 - Create: `python/app/__init__.py`
 - Create: `python/app/config.py`
 - Create: `python/app/main.py`
@@ -67,21 +68,34 @@
 - Consumes: 无(独立新服务)
 - Produces: `GET /health → {"status": "UP"}`;`app.config` 导出全部环境配置常量(DEEPSEEK_BASE_URL/DEEPSEEK_API_KEY/DEEPSEEK_MODEL/SILICONFLOW_BASE_URL/SILICONFLOW_API_KEY/EMBEDDING_MODEL/JAVA_BASE_URL/TOOL_TIMEOUT_SECONDS/MAX_STEPS)——Task 3/4/5 从 `app.config` 导入
 
-- [ ] **Step 1: 创建 requirements.txt**
+- [ ] **Step 1: 创建 pyproject.toml(uv 依赖管理)**
 
-```txt
-fastapi>=0.115
-uvicorn[standard]>=0.32
-sse-starlette>=2.1
-langgraph>=0.2
-langchain-openai>=0.2
-httpx>=0.27
-python-dotenv>=1.0
-pytest>=8.0
-pytest-asyncio>=0.24
+```toml
+[project]
+name = "netdoc-agent"
+version = "0.2.0"
+description = "NetDoc enterprise RAG platform - Python agent service"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "sse-starlette>=2.1",
+    "langgraph>=0.2",
+    "langchain-openai>=0.2",
+    "httpx>=0.27",
+    "python-dotenv>=1.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
 ```
 
-安装:`cd python && pip install -r requirements.txt`(用 venv: `python -m venv .venv && source .venv/bin/activate`)
+安装:`cd python && uv sync`(自动建 .venv + 装依赖 + 生成 uv.lock)
+日常:`uv add <pkg>` 增依赖、`uv add --dev <pkg>` 增 dev 依赖、`uv run <cmd>` 在环境内执行
+面试点:uv = 极速包管理 + lock 文件可复现构建(pip 无锁文件,poetry 慢),现代 Python 工程链
 
 - [ ] **Step 2: 创建 config.py(读取 backend/.env)**
 
@@ -150,9 +164,9 @@ __pycache__/
 .pytest_cache/
 EOF
 
-cd python && pytest -q
+cd python && uv run pytest -q
 # 期望:1 passed
-uvicorn app.main:app --port 9100
+uv run uvicorn app.main:app --port 9100
 curl http://localhost:9100/health   # {"status":"UP"}
 ```
 
@@ -512,7 +526,7 @@ async def test_embed_raises_after_three_failures():
 - [ ] **Step 3: 运行测试**
 
 ```bash
-cd python && pytest -q
+cd python && uv run pytest -q
 # 期望:test_health + 2 个 embed 测试全 PASS
 ```
 
@@ -723,7 +737,7 @@ def test_execute_tool_error_naturalized():
 - [ ] **Step 4: 运行测试**
 
 ```bash
-cd python && pytest -q
+cd python && uv run pytest -q
 # 期望:全部 PASS
 ```
 
@@ -1467,7 +1481,7 @@ async def run_agent(input_state: dict):
 - [ ] **Step 10: 运行测试(Step 2 的用例 + 补 tools 解析单测)**
 
 ```bash
-cd python && pytest -q
+cd python && uv run pytest -q
 # 期望:test_graph.py 全部 PASS(router/verify 用 FakeChat,不真调 LLM)
 ```
 
@@ -1608,7 +1622,7 @@ async def test_event_stream_sequence():
 - [ ] **Step 4: 运行 Python 测试**
 
 ```bash
-cd python && pytest -q
+cd python && uv run pytest -q
 # 期望:全绿
 ```
 
@@ -1766,14 +1780,14 @@ public class ChatController {
 
 ```bash
 cd backend && mvn -q compile          # 期望:BUILD SUCCESS
-cd ../python && pytest -q             # 期望:全绿
+cd ../python && uv run pytest -q             # 期望:全绿
 ```
 
 - [ ] **Step 8: 端到端验证**
 
 ```bash
 # 终端 A:cd backend && mvn spring-boot:run      (Java 9000)
-# 终端 B:cd python && uvicorn app.main:app --port 9100   (Agent 9100)
+# 终端 B:cd python && uv run uv run uvicorn app.main:app --port 9100   (Agent 9100)
 # 终端 C:
 curl -N -X POST http://localhost:9000/api/chat -H "Content-Type: application/json" \
   -d '{"message":"OpenWrt 无线配置的安装步骤是什么?"}'
@@ -2189,7 +2203,7 @@ public class StatsController {
 - [ ] **Step 5: 验证**
 
 ```bash
-cd backend && mvn spring-boot:run && cd ../python && uvicorn app.main:app --port 9100 &
+cd backend && mvn spring-boot:run && cd ../python && uv run uv run uvicorn app.main:app --port 9100 &
 # 问 3 轮(含 1 次缓存命中):
 curl -N -X POST http://localhost:9000/api/chat -H "Content-Type: application/json" -d '{"message":"OpenWrt 无线配置步骤"}' > /dev/null
 curl -N -X POST http://localhost:9000/api/chat -H "Content-Type: application/json" -d '{"message":"OpenWrt 无线配置步骤"}' > /dev/null  # 命中缓存

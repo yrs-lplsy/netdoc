@@ -50,10 +50,10 @@ curl http://localhost:9000/api/documents          # 文档列表
 # 5. 打开 http://localhost:9000 提问(演示页)
 
 # 6.(Phase 2)启动 Python Agent 服务(端口 9100,供 /api/chat 全链路透传)
-cd python && source .venv/bin/activate && uvicorn app.main:app --port 9100
+cd python && uv sync && uv run uvicorn app.main:app --port 9100
 ```
 
-> ⚠️ 本机 8080 被其他项目占用,服务固定使用 **9000**(Java)/ **9100**(Python Agent)端口,同属 9 系列避开 80 系列防混淆;PG 使用 5433(5432 冲突)。
+> Python 依赖用 uv 管理(`pyproject.toml` + `uv.lock` 可复现构建);本机 8080 被其他项目占用,服务固定使用 **9000**(Java)/ **9100**(Python Agent)端口,同属 9 系列避开 80 系列防混淆;PG 使用 5433(5432 冲突)。
 
 ## API(Phase 1 已实现)
 

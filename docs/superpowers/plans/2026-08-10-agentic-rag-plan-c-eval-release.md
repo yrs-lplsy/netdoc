@@ -592,12 +592,13 @@ ENTRYPOINT ["java", "-jar", "app.jar"]
 
 ```dockerfile
 FROM python:3.13-slim
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev   # 按锁文件安装生产依赖,可复现构建
 COPY app ./app
 EXPOSE 9100
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "9100"]
+CMD ["uv", "run", "--no-dev", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "9100"]
 ```
 
 - [ ] **Step 3: docker-compose.yml 全栈**
