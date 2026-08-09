@@ -21,6 +21,7 @@
 - 降级预案(spec §3.1):Python 服务不可用时,Java 侧发 `error` 事件告知"Agent 服务暂不可用",不静默失败
 - 后端代码与注释用英文,README/文档用中文(与 Phase 1 实际一致:保持各文件现有注释语言)
 - 图节点:rewrite/router/verify 用 `chat.ainvoke`(非流式),**只有 generate 用 `chat.astream`**——astream_events 只对流式调用产生 `on_chat_model_stream` 事件,天然过滤掉其他节点的 LLM 调用
+- LangGraph 版本适配:计划代码按 `langgraph>=0.2` 的 StateGraph + `astream_events(version="v2")` 编写(事件里用 `metadata.langgraph_node` 识别节点);若安装到 1.x 遇 API 报错,按官方迁移指南调整,优先固定 0.2/0.3 系列以与本计划代码保持一致
 - 记忆:Phase 2 仅滑动窗口(Java 查最近 N 轮历史传给 Python);micro_compact/snip_compact 双压缩策略归 Phase 3
 
 ## 与 spec 的偏差说明
@@ -54,6 +55,7 @@
 - Create: `python/tests/__init__.py`
 - Create: `python/tests/test_health.py`
 - Create: `python/.env.example`(仅占位说明,真实密钥在 backend/.env)
+- Modify: `agentic-rag/.gitignore`(忽略 python/.venv 与 Python 缓存,防止误提交)
 
 **Interfaces:**
 - Consumes: 无(独立新服务)
@@ -98,6 +100,8 @@ TOOL_TIMEOUT_SECONDS = float(os.getenv("TOOL_TIMEOUT_SECONDS", "10"))
 MAX_STEPS = int(os.getenv("MAX_STEPS", "8"))
 ```
 
+> `python/.env.example`:文档占位,列出可覆盖的环境变量(`JAVA_BASE_URL`/`TOOL_TIMEOUT_SECONDS`/`MAX_STEPS`);默认值已内联在 config.py,且从 backend/.env 读取真实密钥,一般无需创建 python/.env。
+
 - [ ] **Step 3: 创建 main.py(最小 FastAPI 应用)**
 
 ```python
@@ -130,6 +134,16 @@ def test_health():
 - [ ] **Step 5: 运行测试与启动验证**
 
 ```bash
+# .gitignore 补 Python 忽略项(防止误提交 .venv/缓存)
+cat >> ../.gitignore <<'EOF'
+
+# Python
+python/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+EOF
+
 cd python && pytest -q
 # 期望:1 passed
 uvicorn app.main:app --port 8001
@@ -150,6 +164,7 @@ cd ../agentic-rag && git add python/ && git commit -m "feat: python agent servic
 
 **Files:**
 - Modify: `backend/pom.xml`(加 webflux,仅用 WebClient)
+- Modify: `backend/src/main/resources/application.yml`(app.agent.base-url,统一 Python 服务地址)
 - Create: `backend/src/main/java/com/kbrag/tool/ToolCallLog.java`
 - Create: `backend/src/main/java/com/kbrag/tool/ToolCallLogRepository.java`
 - Create: `backend/src/main/java/com/kbrag/tool/ToolController.java`
@@ -309,6 +324,7 @@ public class ToolController {
 ```java
 package com.kbrag.agent;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.reactive.function.client.WebClient;
@@ -323,8 +339,9 @@ import java.util.Map;
 public class AgentHealthController {
     private final WebClient webClient;
 
-    public AgentHealthController(WebClient.Builder builder) {
-        this.webClient = builder.baseUrl("http://localhost:8001").build();
+    public AgentHealthController(WebClient.Builder builder,
+                                 @Value("${app.agent.base-url:http://localhost:8001}") String agentBaseUrl) {
+        this.webClient = builder.baseUrl(agentBaseUrl).build();
     }
 
     @GetMapping("/api/agent/health")
@@ -338,6 +355,13 @@ public class AgentHealthController {
         return Map.of("java", "UP", "agent", agent);
     }
 }
+```
+
+> application.yml 的 `app:` 下新增(Java 侧唯一配置点,Task 6 的 AgentChatService 复用,勿再硬编码):
+
+```yaml
+  agent:
+    base-url: http://localhost:8001   # Python Agent 服务地址
 ```
 
 - [ ] **Step 5: 验证**
@@ -703,8 +727,12 @@ git add -A && git commit -m "feat: python tool layer with java client and duplic
 
 ```
 START → rewrite → router ──retrieve──→ tools → generate → verify ──pass──→ END
-                       │                     │                   └─retry(attempts<1)──→ rewrite
-                       └──direct(闲聊)───────┘                   └─give_up──→ END
+                       │                 │                      │
+                       └──direct(闲聊)───┘                      └─retry(≤1次,FAIL理由回喂rewrite)→ rewrite
+                                                                 └─give_up──→ END
+
+tools 节点内部两阶段:① LLM function calling 决定调用哪些工具(TOOL_SCHEMAS)
+                    ② 循环执行 tool_calls(重复检测/10s 超时/错误自然语言化)
 ```
 
 - [ ] **Step 1: 创建 state.py**
@@ -731,12 +759,14 @@ class AgentState(TypedDict, total=False):
 
 ```python
 import pytest
+from types import SimpleNamespace
 
 from app.state import AgentState
 
 
 class FakeChat:
-    """mock LLM:按调用次数返回预置响应,record 调用参数。"""
+    """mock LLM:按调用次数返回预置响应,record 调用参数。
+    返回 SimpleNamespace(content, tool_calls) 模拟 LangChain AIMessage 形态。"""
 
     def __init__(self, responses):
         self.responses = list(responses)
@@ -744,7 +774,10 @@ class FakeChat:
 
     async def ainvoke(self, messages, **kwargs):
         self.calls.append((messages, kwargs))
-        return self.responses.pop(0)
+        r = self.responses.pop(0)
+        if isinstance(r, str):
+            return SimpleNamespace(content=r, tool_calls=[])
+        return r
 
 
 @pytest.fixture
@@ -753,6 +786,8 @@ def base_state():
                       contexts=[], answer="", sources=[], attempts=0, verified=False,
                       error=None, tool_calls=[])
 
+
+# ---- Router ----
 
 async def test_router_direct_chat_skips_retrieval():
     from app.nodes.router import router_node
@@ -768,24 +803,40 @@ async def test_router_invalid_json_defaults_to_retrieve():
     assert state["needs_retrieval"] is True  # 解析失败降级走检索
 
 
-async def test_tools_skip_duplicate_and_collect_contexts():
+# ---- Tools(两阶段:LLM function calling 决定 → 执行)----
+
+async def test_tools_node_decides_and_executes():
     from app.nodes.tools_node import tools_node
+    call = {"name": "search_kb", "args": {"query": "安装", "top_k": 5}}
+    fake_chat = FakeChat([SimpleNamespace(content="", tool_calls=[call])])
     fake_client = FakeJavaClient()
     state = dict(base_state)
-    state["tool_calls"] = [{"name": "search_kb", "args": {"query": "安装", "top_k": 5}}]
-    # 第一次调用正常:contexts 增加 1
-    out1 = await tools_node(state, fake_client)
+    out = await tools_node(state, fake_chat, fake_client)
+    assert len(out["contexts"]) == 1  # LLM 决定调用 search_kb,结果解析进 contexts
+    assert out["tool_calls"] == [call]
+
+
+async def test_tools_node_duplicate_call_deduped():
+    from app.nodes.tools_node import tools_node
+    call = {"name": "search_kb", "args": {"query": "安装", "top_k": 5}}
+    fake_client = FakeJavaClient()
+    state = dict(base_state)
+    out1 = await tools_node(state, FakeChat([SimpleNamespace(content="", tool_calls=[call])]), fake_client)
+    # 第二次 LLM 又请求相同调用:JavaClient._seen 拦截,contexts 不再增加
+    out2 = await tools_node(out1, FakeChat([SimpleNamespace(content="", tool_calls=[call])]), fake_client)
     assert len(out1["contexts"]) == 1
-    # 第二次相同调用:重复检测拦截,contexts 不再增加
-    out2 = await tools_node(out1, fake_client)
     assert len(out2["contexts"]) == 1
 
+
+# ---- Verify(attempts 递增 + PASS/FAIL 判定 + FAIL 理由回喂)----
 
 async def test_verify_fail_marks_retry():
     from app.nodes.verify import verify_node
     fake = FakeChat(["FAIL 回答中包含了资料没有的信息"])
     state = await verify_node(dict(base_state), fake)
     assert state["verified"] is False
+    assert state["attempts"] == 1
+    assert "未通过" in state["error"]  # FAIL 理由写入 error,回喂 rewrite
 
 
 async def test_verify_pass():
@@ -793,6 +844,52 @@ async def test_verify_pass():
     fake = FakeChat(["PASS 回答忠实于资料"])
     state = await verify_node(dict(base_state), fake)
     assert state["verified"] is True
+    assert state["attempts"] == 1
+
+
+def test_verify_decision_give_up_after_two_failures():
+    from app.nodes.verify import verify_decision
+    assert verify_decision({"verified": False, "attempts": 1}) == "retry"
+    assert verify_decision({"verified": False, "attempts": 2}) == "give_up"
+    assert verify_decision({"verified": True, "attempts": 2}) == "pass"
+
+
+# ---- Generate(检索无果拒答 / 闲聊直答)----
+
+class FakeStreamChat:
+    """模拟流式 LLM:astream 逐 token 产出。"""
+
+    def __init__(self, tokens):
+        self.tokens = tokens
+
+    async def astream(self, messages):
+        for t in self.tokens:
+            yield SimpleNamespace(content=t)
+
+
+async def test_generate_rejects_when_no_contexts_and_retrieval_needed():
+    from app.nodes.generate import generate_node
+    state = dict(base_state)  # needs_retrieval=True
+    out = await generate_node(state, FakeStreamChat(["资料"]))
+    assert "未找到" in out["answer"]
+    assert out["sources"] == []
+
+
+async def test_generate_answers_direct_chat_without_contexts():
+    from app.nodes.generate import generate_node
+    state = dict(base_state)
+    state["needs_retrieval"] = False  # Router 判定闲聊,直接自然回答
+    out = await generate_node(state, FakeStreamChat(["你好!"]))
+    assert out["answer"] == "你好!"
+
+
+# ---- 图结构 ----
+
+def test_graph_has_five_nodes():
+    from app.graph import build_graph
+    graph = build_graph()
+    node_names = {n for n, _ in graph.get_graph().nodes.items()}
+    assert {"rewrite", "router", "tools", "generate", "verify"} <= node_names
 
 
 class FakeJavaClient:
@@ -835,12 +932,16 @@ async def rewrite_node(state: AgentState, chat=None) -> AgentState:
     chat = chat or chat_model
     history = state.get("history") or []
     history_text = "\n".join(f"{h['role']}: {h['content']}" for h in history[-6:])
+    # 忠实度自检失败重试时,把 FAIL 理由回喂,指导改写检索词(spec §4.2 "改写重检索一次")
+    retry_hint = ""
+    if state.get("error"):
+        retry_hint = f"\n注意:上次回答因忠实度审查未通过,理由:{state['error']}。请调整检索词以获取更充分的资料。"
     messages = [
         {"role": "system", "content": SYSTEM},
-        {"role": "user", "content": f"对话历史:\n{history_text or '(无)'}\n\n当前问题:{state['question']}"},
+        {"role": "user", "content": f"对话历史:\n{history_text or '(无)'}\n\n当前问题:{state['question']}{retry_hint}"},
     ]
     resp = await chat.ainvoke(messages)
-    state["rewritten"] = resp.content.strip() or state["question"]
+    state["rewritten"] = (getattr(resp, "content", "") or "").strip() or state["question"]
     return state
 ```
 
@@ -867,8 +968,9 @@ async def router_node(state: AgentState, chat=None) -> AgentState:
         {"role": "system", "content": SYSTEM},
         {"role": "user", "content": f"问题:{state['rewritten']}"},
     ])
+    text = getattr(resp, "content", "") or ""
     try:
-        decision = json.loads(resp.content.strip().strip("`"))
+        decision = json.loads(text.strip().strip("`"))
         state["needs_retrieval"] = bool(decision.get("needs_retrieval", True))
     except Exception:
         state["needs_retrieval"] = True  # 解析失败降级:宁可多检索,不可漏检索
@@ -879,29 +981,47 @@ def route_decision(state: AgentState) -> str:
     return "retrieve" if state["needs_retrieval"] else "direct"
 ```
 
-- [ ] **Step 6: 实现 tools 节点(执行工具调用 + 重复检测 + 错误自然语言化)**
+- [ ] **Step 6: 实现 tools 节点(两阶段:LLM function calling 决定 → 执行,带重复检测与错误自然语言化)**
 
 ```python
 from app.state import AgentState
 
+TOOLS_SYSTEM = (
+    "你是网络设备技术文档问答助手。回答技术问题前必须调用 search_kb 检索知识库;"
+    "需要溯源时调用 get_doc_detail;用户问知识库规模时调用 get_stats。"
+)
 
-async def tools_node(state: AgentState, client=None) -> AgentState:
-    """执行 LLM 请求的工具调用;重复调用由 JavaClient 拦截;错误自然语言化写入 state。"""
+
+async def tools_node(state: AgentState, chat=None, client=None) -> AgentState:
+    """阶段1:LLM function calling 决定工具调用;阶段2:循环执行(去重/超时/错误自然语言化)。"""
     from app.java_client import JavaClient
-    from app.tools import execute_tool
+    from app.llm import chat_model
+    from app.tools import TOOL_SCHEMAS, execute_tool
 
+    chat = chat or chat_model
     client = client or JavaClient()
-    requested = state.get("tool_calls") or []
     contexts = list(state.get("contexts") or [])
 
+    # 阶段 1:LLM 携带工具 schema 决定调用哪些工具(DeepSeek Function Calling)
+    resp = await chat.ainvoke(
+        [
+            {"role": "system", "content": TOOLS_SYSTEM},
+            {"role": "user", "content": f"问题:{state.get('rewritten') or state['question']}"},
+        ],
+        tools=TOOL_SCHEMAS,
+    )
+    raw_calls = getattr(resp, "tool_calls", None) or []
+    requested = [{"name": c.get("name"), "args": c.get("args") or {}} for c in raw_calls]
+
+    # 阶段 2:执行;重复调用由 JavaClient._seen 拦截,错误自然语言化写入执行结果
     for call in requested:
-        name = call.get("name")
-        args = call.get("args") or {}
+        name, args = call["name"], call["args"]
         text = execute_tool(name, args, client)
         if name == "search_kb" and not text.startswith("[工具"):
             contexts.extend(_parse_hits(text))  # 把检索结果文本解析回结构化
+
     state["contexts"] = contexts
-    state["tool_calls"] = requested
+    state["tool_calls"] = list(state.get("tool_calls") or []) + requested  # 累积记录(供审计/去重)
     return state
 
 
@@ -924,10 +1044,13 @@ def _parse_hits(text: str) -> list:
 ```
 
 > execute_tool 的输出格式(见 Task 4 Step 2)与 _parse_hits 的正则一一对应,改格式必须同步改解析。
+> DeepSeek 的 tool_calls 结构与 OpenAI 一致:`[{"name": ..., "args": {...}}]`(langchain 解析后)。
 
-- [ ] **Step 7: 实现 verify 节点(PASS/FAIL 判断)**
+- [ ] **Step 7: 实现 verify 节点(PASS/FAIL 判断 + attempts 递增 + FAIL 理由回喂)**
 
 ```python
+import re
+
 from app.state import AgentState
 
 SYSTEM = (
@@ -949,18 +1072,23 @@ async def verify_node(state: AgentState, chat=None) -> AgentState:
         {"role": "system", "content": SYSTEM},
         {"role": "user", "content": f"资料片段:\n{context_text or '(无)'}\n\n回答:{state.get('answer', '')}"},
     ])
-    text = (resp.content or "").strip().upper()
-    state["verified"] = text.startswith("PASS")
+    text = getattr(resp, "content", "") or ""
+    state["attempts"] = (state.get("attempts") or 0) + 1  # 每次审查 +1,保证 retry 最多一次
+    if re.search(r"\bPASS\b", text.upper()):  # 容忍 "审查结果:PASS" 等前缀
+        state["verified"] = True
+    else:
+        state["verified"] = False
+        state["error"] = f"忠实度审查未通过:{text[:200]}"  # FAIL 理由写入 error,回喂 rewrite
     return state
 
 
 def verify_decision(state: AgentState) -> str:
     if state["verified"]:
         return "pass"
-    return "retry" if (state.get("attempts") or 0) < 1 else "give_up"
+    return "retry" if (state.get("attempts") or 0) < 2 else "give_up"
 ```
 
-- [ ] **Step 8: 实现 generate 节点(带引用流式,资料缺失明确拒答)**
+- [ ] **Step 8: 实现 generate 节点(带引用流式;按 needs_retrieval 分支:检索无果拒答 / 闲聊直答)**
 
 ```python
 from app.state import AgentState
@@ -972,19 +1100,26 @@ SYSTEM = (
 )
 
 
-async def generate_node(state: AgentState) -> AgentState:
+async def generate_node(state: AgentState, chat=None) -> AgentState:
     from app.llm import chat_model
 
+    chat = chat or chat_model
     contexts = state.get("contexts") or []
-    if not contexts:
+    # 检索分支但没拿到资料 → 明确拒答/反问,不硬答(spec §8);闲聊分支无 contexts 直接自然回答
+    if not contexts and state.get("needs_retrieval", True):
         state["answer"] = "资料库中暂未找到相关信息,请换一种问法或补充文档。"
         state["sources"] = []
         return state
 
-    prompt_parts = ["资料:\n"]
-    for i, c in enumerate(contexts):
-        prompt_parts.append(f"[{i + 1}] {c.get('headingPath', '')}: {c.get('content', '')}")
-    prompt_parts.append("\n要求:回答中标注引用编号;资料中没有的内容直接说明;用中文回答。")
+    prompt_parts = []
+    if contexts:
+        prompt_parts.append("资料:\n")
+        for i, c in enumerate(contexts):
+            prompt_parts.append(f"[{i + 1}] {c.get('headingPath', '')}: {c.get('content', '')}")
+    if state.get("needs_retrieval", True):
+        prompt_parts.append("\n要求:回答中标注引用编号;资料中没有的内容直接说明;用中文回答。")
+    else:
+        prompt_parts.append("\n要求:这是闲聊,无需引用资料,自然回答;用中文。")
     prompt_parts.append(f"\n问题:{state.get('rewritten') or state['question']}")
 
     messages = [
@@ -993,10 +1128,8 @@ async def generate_node(state: AgentState) -> AgentState:
     ]
 
     answer_parts = []
-    async for chunk in chat_model.astream(messages):
-        text = chunk.content or ""
-        answer_parts.append(text)
-        state["_token"] = text  # 流式 token 由 Task 6 的 run_agent 采集转发
+    async for chunk in chat.astream(messages):
+        answer_parts.append(chunk.content or "")
     state["answer"] = "".join(answer_parts)
     state["sources"] = [
         {"title": c.get("headingPath", ""), "snippet": (c.get("content") or "")[:120]}
@@ -1049,7 +1182,7 @@ async def run_agent(input_state: dict):
         config={"recursion_limit": MAX_STEPS},
     ):
         kind = event.get("event")
-        node = event.get("name", "")
+        node = event.get("metadata", {}).get("langgraph_node", "")  # v2 事件标准字段,比 name 更可靠
         if kind == "on_chat_model_stream":
             chunk = event["data"].get("chunk")
             token = chunk.content if chunk else ""
@@ -1406,10 +1539,12 @@ git add -A && git commit -m "feat: end-to-end SSE proxy from java gateway to pyt
 - §8 事件 seq → Task 6 Step 1(emit 递增 seq)
 - 降级预案(Java 直连 LLM)→ ChatService 保留,Phase 3 做开关。**无遗漏。**
 
-**占位符扫描:** 无 TBD/TODO;Task 5 的 tools_node 为 Step 6 完整实现(含 _parse_hits),Step 2 测试与之对齐;graph.py 的 run_agent 单次 astream_events 完成采集,无二次执行。
+**占位符扫描:** 无 TBD/TODO;tools_node 为 Step 6 两阶段完整实现(LLM function calling 决定 + 执行,含 _parse_hits);run_agent 单次 astream_events 完成采集(无二次 ainvoke);所有节点对 LLM 响应统一用 `getattr(resp, "content", "")` 防御性取值,与 FakeChat 的 SimpleNamespace 形态一致。
 
 **类型一致性:**
 - `JavaClient` 方法 `search_kb/get_doc_detail/get_stats` 与 `execute_tool` 映射、Java 端点路径一致
-- `run_agent` 产出 `(kind, payload)` 元组:answer/sources/done/error,与 Task 6 event_stream 消费一致;SSE 事件名 `answer/source/done/error` 与 Phase 1 前端 index.html 解析一致
+- LLM tool_calls 契约:`[{"name": str, "args": dict}]`——langchain 解析 DeepSeek function calling 后的标准形态,tools_node 消费、测试用 SimpleNamespace(tool_calls=[...]) 对齐
+- `run_agent` 产出 `(kind, payload)` 元组:answer/sources/done,与 Task 6 event_stream 消费一致;SSE 事件名 `answer/source/done/error` 与 Phase 1 前端 index.html 解析一致
 - `AgentState` 字段在 nodes/graph/sse 间一致(`question/history/needs_retrieval/contexts/answer/sources/attempts/verified/error/tool_calls`)
 - Java `AgentChatService.stream` 签名与 ChatController 调用一致;`Message`/`Conversation` 为 Lombok getter/setter(Phase 1 已统一)
+- `app.agent.base-url` 为 Java 侧唯一配置点(AgentHealthController 与 AgentChatService 同源,application.yml)
