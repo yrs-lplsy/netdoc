@@ -1,12 +1,13 @@
-# Agentic RAG Phase 2:Python Agent 服务(LangGraph 五节点 + Java 工具端点 + 全链路 SSE)实施计划
+# Agentic RAG Phase 2:Python Agent 基础功能 + Java 工程化同步实施计划
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
 > 本项目按 HANDOFF 协作协议执行:**用户自己动手写代码**,助手负责任务拆解、验收、报错拆解、机械性修复。任务推进用 executing-plans 逐任务验收。
+> 双线并行约定(2026-08-09):**Python 侧基础功能优先**(新功能先跑通),**Java 侧工程化同步推进**(Java 基础功能 Phase 1 已完成,限流/语义缓存/可观测即时插入);Task 5/8/9 为 Java 工程化,与 Python 任务(Task 1-4/6/7)可并行开发。
 
-**Goal:** 3 周内交付 Python Agent 服务:FastAPI + LangGraph 五节点(查询改写 → 检索决策 Router → 工具调用 → 生成 → 忠实度自检)+ Java 工具端点 `/api/agent/tools/*` + 全链路 SSE 透传,形成"Python 管思考、Java 管执行"的完整 Agent 故事。
+**Goal:** 交付 Python Agent 服务(FastAPI + LangGraph 五节点 + 全链路 SSE 透传)的同时,Java 侧工程优化同步推进(用户级令牌桶限流、语义缓存、每轮 span 可观测)——"Python 管思考、Java 管执行"的完整 Agent 故事,工程化指标可量化、可面试讲。
 
-**Architecture:** Python 独立服务(`python/` 目录,FastAPI,端口 **9100**)承载 LangGraph 有状态图;图节点通过 HTTP 反向调用 Java 的工具端点(search_kb/get_doc_detail/get_stats)完成检索与溯源;Java 的 `/api/chat` 网关用 WebClient 把 SSE 事件原样透传给浏览器;Java 负责会话落库与历史回放,Python 负责 Agent 编排与 LLM 调用。
+**Architecture:** Python 独立服务(`python/` 目录,FastAPI,端口 **9100**)承载 LangGraph 有状态图;图节点通过 HTTP 反向调用 Java 的工具端点(search_kb/get_doc_detail/get_stats)完成检索与溯源;Java 的 `/api/chat` 网关用 WebClient 把 SSE 事件原样透传给浏览器;Java 负责会话落库与历史回放,Python 负责 Agent 编排与 LLM 调用。Java 工程化在对话网关同步落地:Redis 用户级令牌桶限流(IP 粒度)、语义缓存(embedding 相似度 >0.95 命中)、每轮 span 落库(各阶段耗时/缓存命中率)。
 
 **Tech Stack:** Python 3.10+、FastAPI、uvicorn、sse-starlette、LangGraph(0.2+)、langchain-openai(OpenAI 兼容协议)、httpx、python-dotenv、pytest、pytest-asyncio;Java 侧新增 spring-boot-starter-webflux(仅用 WebClient)。
 
@@ -40,8 +41,11 @@
 | Task 2 | Java Agent 工具端点(search/get-doc-detail/get-stats + tool_call_log + /api/agent/health) | curl 三个工具端点可用,tool_call_log 落库 |
 | Task 3 | Python LLM/Embedding 客户端封装 | pytest mock 通过 + 手动真调通 chat/embedding |
 | Task 4 | Python 工具层(JavaApiClient + 工具 schema + 超时/重复检测) | Python 能真调通 Java 工具端点 |
-| Task 5 | LangGraph 五节点图(TDD:Router/重复检测/自检重试) | pytest 通过,图单测全绿 |
-| Task 6 | 全链路 SSE(Java WebClient 透传 + Python stream_events + 端到端) | 浏览器提问流式回答,message 落库 |
+| Task 5 | **Java 工程化#1:用户级令牌桶限流(Redis Lua)** | 超限 429,令牌补充后恢复;TokenBucket 单测 2/2 |
+| Task 6 | LangGraph 五节点图(TDD:Router/重复检测/自检重试) | pytest 通过,图单测全绿 |
+| Task 7 | 全链路 SSE(Java WebClient 透传 + Python stream_events + phase 事件带耗时) | 浏览器提问流式回答,message 落库 |
+| Task 8 | **Java 工程化#2:语义缓存(embedding 相似度 >0.95)** | 同问题二次命中,命中率可查 |
+| Task 9 | **Java 工程化#3:可观测(每轮 span 落库)+ /api/stats** | 每轮 span 落库,/api/stats 出指标 |
 
 ---
 
@@ -706,7 +710,219 @@ git add -A && git commit -m "feat: python tool layer with java client and duplic
 
 ---
 
-### Task 5: LangGraph 五节点图(TDD)
+### Task 5: Java 工程化#1:用户级令牌桶限流(Redis Lua)
+
+> 工程优化与 Python 基础功能同步推进:本任务不依赖 Python 侧,可随时并行开发。
+
+**Files:**
+- Create: `backend/src/main/java/com/kbrag/ratelimit/TokenBucket.java`(令牌桶纯算法,可单测)
+- Test: `backend/src/test/java/com/kbrag/ratelimit/TokenBucketTest.java`
+- Create: `backend/src/main/java/com/kbrag/ratelimit/RateLimiter.java`(Redis 存储层,Lua 原子)
+- Modify: `backend/src/main/resources/application.yml`(app.rate-limit 配置)
+- Modify: `backend/src/main/java/com/kbrag/chat/ChatController.java`(入口限流,超限 429)
+
+**Interfaces:**
+- Consumes: `StringRedisTemplate`(Phase 1 已引入 spring-boot-starter-data-redis)
+- Produces: `TokenBucket.tryAcquire() -> boolean`;`RateLimiter.tryAcquire(String userId) -> boolean`(Lua 原子:读令牌→按时间补充→消耗);ChatController 在 SSE 入口限流(超限 HTTP 429)
+
+- [ ] **Step 1: 写失败测试(TDD)**
+
+```java
+package com.kbrag.ratelimit;
+
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.*;
+
+class TokenBucketTest {
+    @Test
+    void burst_allowed_up_to_capacity() {
+        TokenBucket b = new TokenBucket(3, 1);   // 容量 3,每秒补 1
+        assertTrue(b.tryAcquire());
+        assertTrue(b.tryAcquire());
+        assertTrue(b.tryAcquire());
+        assertFalse(b.tryAcquire());              // 第 4 个被拒
+    }
+
+    @Test
+    void refills_over_time() throws InterruptedException {
+        TokenBucket b = new TokenBucket(1, 10);   // 容量 1,每秒补 10
+        assertTrue(b.tryAcquire());
+        assertFalse(b.tryAcquire());
+        Thread.sleep(200);                        // 200ms 补充 2 个(容量封顶 1)
+        assertTrue(b.tryAcquire());
+    }
+}
+```
+
+- [ ] **Step 2: 运行确认失败**
+
+```bash
+cd backend && mvn test -Dtest=TokenBucketTest
+# 期望:编译失败(TokenBucket 不存在)
+```
+
+- [ ] **Step 3: 实现 TokenBucket(算法与存储分离,单测不依赖 Redis——面试点)**
+
+```java
+package com.kbrag.ratelimit;
+
+/**
+ * 令牌桶纯算法:容量 capacity,每秒补充 refillPerSecond 个令牌。
+ * 与存储解耦,单测可跑;Redis 层只做状态持久化与原子性。
+ */
+public class TokenBucket {
+    private final double capacity;
+    private final double refillPerSecond;
+    private double tokens;
+    private long lastRefillNanos;
+
+    public TokenBucket(double capacity, double refillPerSecond) {
+        this.capacity = capacity;
+        this.refillPerSecond = refillPerSecond;
+        this.tokens = capacity;
+        this.lastRefillNanos = System.nanoTime();
+    }
+
+    /** 尝试消耗 1 个令牌;不足返回 false。synchronized 保证并发安全。 */
+    public synchronized boolean tryAcquire() {
+        long now = System.nanoTime();
+        double elapsed = (now - lastRefillNanos) / 1_000_000_000.0;
+        tokens = Math.min(capacity, tokens + elapsed * refillPerSecond);
+        lastRefillNanos = now;
+        if (tokens < 1) return false;
+        tokens -= 1;
+        return true;
+    }
+}
+```
+
+- [ ] **Step 4: 运行确认通过**
+
+```bash
+mvn test -Dtest=TokenBucketTest
+# 期望:2 个测试 PASS
+```
+
+- [ ] **Step 5: 实现 RateLimiter(Redis Lua 原子操作)**
+
+```java
+package com.kbrag.ratelimit;
+
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.stereotype.Service;
+
+import java.util.List;
+
+/**
+ * Redis 令牌桶:key = rate:{userId} 存当前令牌数,rate:{userId}:ts 存上次补充时间戳。
+ * Lua 脚本单次原子执行(Redis 单线程保证)——面试点:为什么不用 get+set(竞态:并发请求同时读到旧令牌)。
+ */
+@Service
+public class RateLimiter {
+    private final StringRedisTemplate redis;
+    private final double capacity;
+    private final double refillPerSecond;
+
+    public RateLimiter(StringRedisTemplate redis,
+                       @Value("${app.rate-limit.capacity:10}") double capacity,
+                       @Value("${app.rate-limit.refill-per-second:1}") double refillPerSecond) {
+        this.redis = redis;
+        this.capacity = capacity;
+        this.refillPerSecond = refillPerSecond;
+    }
+
+    private static final DefaultRedisScript<Long> SCRIPT = new DefaultRedisScript<>("""
+            local key = KEYS[1]
+            local now = tonumber(ARGV[1])
+            local cap = tonumber(ARGV[2])
+            local refill = tonumber(ARGV[3])
+            local tokens = tonumber(redis.call('GET', key) or cap)
+            local last = tonumber(redis.call('GET', key .. ':ts') or now)
+            tokens = math.min(cap, tokens + (now - last) / 1000.0 * refill)
+            if tokens < 1 then
+                redis.call('SET', key .. ':ts', now)
+                return 0
+            end
+            redis.call('SET', key, tokens - 1)
+            redis.call('SET', key .. ':ts', now)
+            return 1
+            """, Long.class);
+
+    /** userId 粒度限流;false = 超限。 */
+    public boolean tryAcquire(String userId) {
+        Long r = redis.execute(SCRIPT,
+                List.of("rate:" + userId),
+                List.of(String.valueOf(System.currentTimeMillis()),
+                        String.valueOf(capacity), String.valueOf(refillPerSecond)));
+        return r != null && r == 1L;
+    }
+}
+```
+
+- [ ] **Step 6: application.yml 配置 + ChatController 接入**
+
+```yaml
+  rate-limit:
+    capacity: 10        # 桶容量:允许突发 10 次
+    refill-per-second: 2  # 每秒补充 2 个令牌
+```
+
+```java
+@RestController
+@RequestMapping("/api/chat")
+public class ChatController {
+    @Autowired private AgentChatService agentChatService;
+    @Autowired private RateLimiter rateLimiter;
+    private final ExecutorService executor = Executors.newFixedThreadPool(8);
+
+    public record ChatRequest(String message, Long conversationId) {}
+
+    @PostMapping(produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public ResponseEntity<?> chat(@RequestBody ChatRequest req, HttpServletRequest http) {
+        String userId = clientIp(http);   // 无登录态,用 IP 作为用户标识(登录后换 userId,维度不变)
+        if (!rateLimiter.tryAcquire(userId)) {
+            return ResponseEntity.status(429).body("请求过于频繁,请稍后再试");
+        }
+        SseEmitter emitter = new SseEmitter(180_000L);
+        executor.execute(() -> agentChatService.stream(req.message(), req.conversationId(), emitter));
+        return ResponseEntity.ok().contentType(MediaType.TEXT_EVENT_STREAM_VALUE).body(emitter);
+    }
+
+    private String clientIp(HttpServletRequest req) {
+        String fwd = req.getHeader("X-Forwarded-For");
+        return fwd != null && !fwd.isBlank() ? fwd.split(",")[0].trim() : req.getRemoteAddr();
+    }
+}
+```
+
+> 演示页 index.html 顺手加 429 提示(机械性小改):`if (!resp.ok) { out.textContent = await resp.text(); return; }`。
+
+- [ ] **Step 7: 验证**
+
+```bash
+cd backend && mvn spring-boot:run
+# 临时调低配置便于压测:capacity=3, refill-per-second=1
+for i in $(seq 1 6); do
+  code=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:9000/api/chat \
+    -H "Content-Type: application/json" -d '{"message":"测试限流"}')
+  echo "第 $i 次: $code"
+done
+# 期望:前 3 次 200,后 3 次 429(令牌耗尽);等待 1 秒后再请求恢复 200
+```
+
+- [ ] **Step 8: 提交**
+
+```bash
+git add -A && git commit -m "feat: user-level token bucket rate limiting with redis lua"
+```
+
+**验收**:TokenBucket 单测 2/2 PASS;连续请求超限返回 429,令牌补充后恢复;限流粒度按 IP(用户级,预留 userId 维度)。
+
+---
+
+### Task 6: LangGraph 五节点图(TDD)
 
 **Files:**
 - Create: `python/app/state.py`
@@ -1141,6 +1357,8 @@ async def generate_node(state: AgentState, chat=None) -> AgentState:
 - [ ] **Step 9: 组装图 graph.py(含 run_agent 流式事件采集)**
 
 ```python
+import time
+
 from langgraph.graph import END, START, StateGraph
 
 from app.nodes.generate import generate_node
@@ -1171,11 +1389,12 @@ def build_graph():
 
 async def run_agent(input_state: dict):
     """流式执行 Agent;单次 astream_events 同时采集 token 与最终状态(勿二次 ainvoke,会重复执行图)。
-    recursion_limit=MAX_STEPS 防死循环。产出 (kind, payload):answer/sources/done。"""
+    recursion_limit=MAX_STEPS 防死循环。产出 (kind, payload):answer/phase/sources/done。"""
     from app.config import MAX_STEPS
 
     graph = build_graph()
     final_answer, sources, verified, error = "", [], False, None
+    start_ns: dict[str, int] = {}
     async for event in graph.astream_events(
         input_state,
         version="v2",
@@ -1189,15 +1408,17 @@ async def run_agent(input_state: dict):
             if token:
                 yield ("answer", token)
         elif kind == "on_chain_start" and node in NODE_NAMES:
-            yield ("phase", node)
-        elif kind == "on_chain_end" and node == "generate":
+            start_ns[node] = time.monotonic_ns()
+        elif kind == "on_chain_end" and node in NODE_NAMES:
             output = event["data"].get("output") or {}
-            final_answer = output.get("answer", "")
-            sources = output.get("sources") or []
-        elif kind == "on_chain_end" and node == "verify":
-            output = event["data"].get("output") or {}
-            verified = bool(output.get("verified"))
-            error = output.get("error")
+            if node == "generate":
+                final_answer = output.get("answer", "")
+                sources = output.get("sources") or []
+            elif node == "verify":
+                verified = bool(output.get("verified"))
+                error = output.get("error")
+            # 阶段耗时事件(Java 可观测 Task 9 汇总用;前端忽略未知事件)
+            yield ("phase", {"node": node, "elapsedMs": (time.monotonic_ns() - start_ns.get(node, 0)) // 1_000_000})
     yield ("sources", sources)
     yield ("done", {"answer": final_answer, "verified": verified, "error": error})
 ```
@@ -1221,7 +1442,7 @@ git add -A && git commit -m "feat: langgraph five-node agent graph with guards"
 
 ---
 
-### Task 6: 全链路 SSE(Java WebClient 透传 + Python stream_events + 端到端)
+### Task 7: 全链路 SSE(Java WebClient 透传 + Python stream_events + phase 事件带耗时)
 
 **Files:**
 - Create: `python/app/sse.py`(AgentChatRequest + SSE 事件生成器)
@@ -1280,6 +1501,8 @@ async def event_stream(req: AgentChatRequest) -> AsyncIterator[dict]:
         async for kind, payload in run_agent(build_input(req)):
             if kind == "answer":
                 yield emit("answer", payload)
+            elif kind == "phase":
+                yield emit("phase", payload)   # 阶段耗时透传(Java 可观测用;前端忽略)
             elif kind == "sources":
                 yield emit("source", payload)
             elif kind == "done":
@@ -1352,6 +1575,7 @@ cd python && pytest -q
 ```java
 package com.kbrag.chat;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -1362,6 +1586,7 @@ import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.codec.ServerSentEvent;
 
 import java.time.Duration;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -1405,6 +1630,7 @@ public class AgentChatService {
                 .timeout(Duration.ofSeconds(180));
 
         StringBuilder answer = new StringBuilder();
+        Map<String, Integer> phaseMs = new HashMap<>();   // 各阶段耗时(供 Task 9 可观测落库)
         stream.subscribe(
                 sse -> {
                     try {
@@ -1414,8 +1640,11 @@ public class AgentChatService {
                             // data 形如 {"seq":n,"data":"token"}
                             String token = om.readTree(data).path("data").asText("");
                             answer.append(token);
-                        }
-                        if ("done".equals(event) && data != null) {
+                        } else if ("phase".equals(event) && data != null) {
+                            // data 形如 {"seq":n,"data":{"node":"rewrite","elapsedMs":123}}
+                            JsonNode d = om.readTree(data).path("data");
+                            phaseMs.put(d.path("node").asText(), d.path("elapsedMs").asInt(0));
+                        } else if ("done".equals(event) && data != null) {
                             // data 形如 {"seq":n,"data":{...}}
                             boolean verified = om.readTree(data).path("data").path("verified").asBoolean(false);
                             String error = om.readTree(data).path("data").path("error").asText("");
@@ -1506,7 +1735,7 @@ cd ../python && pytest -q             # 期望:全绿
 # 终端 C:
 curl -N -X POST http://localhost:9000/api/chat -H "Content-Type: application/json" \
   -d '{"message":"OpenWrt 无线配置的安装步骤是什么?"}'
-# 期望:event:answer 增量(中间含 router/tools 阶段日志)、event:source、event:done
+# 期望:event:answer 增量、event:phase(带 {"node","elapsedMs"})、event:source、event:done
 psql postgresql://kbrag:kbrag123@localhost:5433/kbrag -c "SELECT role, left(content, 40) FROM message ORDER BY id DESC LIMIT 2;"
 # 期望:user/assistant 两条落库
 curl http://localhost:9000/api/agent/health   # {"java":"UP","agent":"UP"}
@@ -1522,29 +1751,447 @@ curl http://localhost:9000/api/agent/health   # {"java":"UP","agent":"UP"}
 git add -A && git commit -m "feat: end-to-end SSE proxy from java gateway to python agent"
 ```
 
-**验收**:curl -N 看到 answer/source/done 事件流;message 落库;浏览器端到端可用;`/api/agent/health` 双 UP。
+**验收**:curl -N 看到 answer/source/done 事件流(含 phase 耗时);message 落库;浏览器端到端可用;`/api/agent/health` 双 UP。
+
+---
+
+### Task 8: Java 工程化#2:语义缓存(embedding 相似度 >0.95)
+
+> 命中直接返回缓存回答,不调 Python/LLM——省 Token、降延迟(面试量化点:命中率、省 token 数)。
+
+**Files:**
+- Create: `backend/src/main/java/com/kbrag/cache/CosineSimilarity.java`(纯算法,可单测)
+- Test: `backend/src/test/java/com/kbrag/cache/CosineSimilarityTest.java`
+- Create: `backend/src/main/java/com/kbrag/cache/ChatCacheService.java`(含静态纯方法 selectBest,可单测)
+- Modify: `backend/src/main/resources/application.yml`(app.cache)
+- Modify: `backend/src/main/java/com/kbrag/chat/AgentChatService.java`(lookup 命中直返 / 未命中完成后 put)
+
+**Interfaces:**
+- Consumes: `EmbeddingService.embed(List<String>) -> List<float[]>`(Phase 1)、StringRedisTemplate
+- Produces: `CosineSimilarity.cosine(float[] a, float[] b) -> double`;`ChatCacheService.lookup(String question) -> Optional<CacheHit>`、`put(String question, String answer, String sourcesJson)`;`CacheHit(answer, sourcesJson, embeddingJson)`;SSE 新增事件 `cache_hit`
+
+- [ ] **Step 1: 写失败测试(TDD)**
+
+```java
+package com.kbrag.cache;
+
+import org.junit.jupiter.api.Test;
+import java.util.Map;
+import static org.junit.jupiter.api.Assertions.*;
+
+class CosineSimilarityTest {
+    @Test
+    void identical_vectors_similarity_one() {
+        float[] v = {1f, 2f, 3f};
+        assertEquals(1.0, CosineSimilarity.cosine(v, v), 1e-6);
+    }
+
+    @Test
+    void orthogonal_vectors_similarity_zero() {
+        assertEquals(0.0, CosineSimilarity.cosine(new float[]{1f, 0f}, new float[]{0f, 1f}), 1e-6);
+    }
+
+    @Test
+    void above_threshold_classified_as_hit() {
+        float[] a = {1f, 0f};
+        float[] b = {0.99f, 0.141f};          // 夹角约 8°,相似度约 0.99
+        assertTrue(CosineSimilarity.cosine(a, b) > 0.95);
+    }
+
+    @Test
+    void select_best_above_threshold() {
+        Map<String, float[]> candidates = Map.of(
+                "a", new float[]{1f, 0f},
+                "b", new float[]{0.5f, 0.866f});  // 与 query 夹角 60°,相似度 0.5
+        assertEquals("a", ChatCacheService.selectBest(candidates, new float[]{1f, 0f}, 0.95));
+    }
+
+    @Test
+    void none_above_threshold_returns_null() {
+        assertNull(ChatCacheService.selectBest(Map.of("a", new float[]{0f, 1f}), new float[]{1f, 0f}, 0.95));
+    }
+}
+```
+
+- [ ] **Step 2: 运行确认失败**
+
+```bash
+cd backend && mvn test -Dtest=CosineSimilarityTest
+```
+
+- [ ] **Step 3: 实现 CosineSimilarity 与 selectBest**
+
+```java
+package com.kbrag.cache;
+
+import java.util.Map;
+
+/** 余弦相似度(纯算法,手写不引依赖——面试点:点积/模长,与 pgvector <=> 同一数学)。 */
+public class CosineSimilarity {
+    public static double cosine(float[] a, float[] b) {
+        double dot = 0, na = 0, nb = 0;
+        for (int i = 0; i < a.length; i++) {
+            dot += a[i] * b[i];
+            na += a[i] * a[i];
+            nb += b[i] * b[i];
+        }
+        return dot / (Math.sqrt(na) * Math.sqrt(nb));
+    }
+
+    /** 从候选向量中选相似度超过 threshold 的最高分 id;无命中返回 null(可单测的纯决策)。 */
+    public static String selectBest(Map<String, float[]> candidates, float[] query, double threshold) {
+        String bestId = null;
+        double bestSim = threshold;
+        for (Map.Entry<String, float[]> e : candidates.entrySet()) {
+            double sim = cosine(query, e.getValue());
+            if (sim > bestSim) { bestSim = sim; bestId = e.getKey(); }
+        }
+        return bestId;
+    }
+}
+```
+
+- [ ] **Step 4: 运行确认通过**
+
+```bash
+mvn test -Dtest=CosineSimilarityTest
+# 期望:5 个测试 PASS
+```
+
+- [ ] **Step 5: 实现 ChatCacheService(Redis 存储 + 候选裁剪)**
+
+```java
+package com.kbrag.cache;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kbrag.ai.EmbeddingService;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.stereotype.Service;
+
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+
+/**
+ * 语义缓存:hash chat:cache:{id} 存 question/embedding/answer/sourcesJson;
+ * 索引 list chat:cache:recent(最近 recentMax 条问题 id)——只对候选集算余弦,避免全量遍历(面试讲取舍)。
+ */
+@Service
+public class ChatCacheService {
+    private final StringRedisTemplate redis;
+    private final EmbeddingService embeddingService;
+    private final ObjectMapper om = new ObjectMapper();
+    private final double threshold;
+    private final int recentMax;
+
+    public ChatCacheService(StringRedisTemplate redis, EmbeddingService embeddingService,
+                            @Value("${app.cache.similarity-threshold:0.95}") double threshold,
+                            @Value("${app.cache.recent-max:200}") int recentMax) {
+        this.redis = redis;
+        this.embeddingService = embeddingService;
+        this.threshold = threshold;
+        this.recentMax = recentMax;
+    }
+
+    public record CacheHit(String answer, String sourcesJson) {}
+
+    /** 语义命中:embed 问题 → 与最近 recentMax 条算余弦 → 超过 threshold 取最高。 */
+    public Optional<CacheHit> lookup(String question) {
+        float[] qv = embeddingService.embed(List.of(question)).get(0);
+        List<String> ids = redis.opsForList().range("chat:cache:recent", 0, -1);
+        if (ids == null || ids.isEmpty()) return Optional.empty();
+        Map<String, float[]> candidates = new LinkedHashMap<>();
+        Map<String, String> answers = new LinkedHashMap<>();
+        Map<String, String> sources = new LinkedHashMap<>();
+        for (String id : ids) {
+            Map<Object, Object> entry = redis.opsForHash().entries("chat:cache:" + id);
+            if (entry.isEmpty()) continue;
+            candidates.put(id, parseEmbedding((String) entry.get("embedding")));
+            answers.put(id, (String) entry.get("answer"));
+            sources.put(id, (String) entry.get("sourcesJson"));
+        }
+        String best = CosineSimilarity.selectBest(candidates, qv, threshold);
+        if (best == null) return Optional.empty();
+        return Optional.of(new CacheHit(answers.get(best), sources.get(best)));
+    }
+
+    public void put(String question, String answer, String sourcesJson) {
+        float[] qv = embeddingService.embed(List.of(question)).get(0);
+        String id = String.valueOf(System.nanoTime());
+        Map<String, String> entry = Map.of(
+                "question", question, "embedding", toJson(qv),
+                "answer", answer, "sourcesJson", sourcesJson,
+                "ts", String.valueOf(System.currentTimeMillis()));
+        redis.opsForHash().putAll("chat:cache:" + id, entry);
+        redis.opsForList().leftPush("chat:cache:recent", id);
+        redis.opsForList().trim("chat:cache:recent", 0, recentMax - 1);   // 只留最近 recentMax 条
+    }
+
+    private String toJson(float[] v) {
+        try { return om.writeValueAsString(v); } catch (Exception e) { return "[]"; }
+    }
+
+    private float[] parseEmbedding(String json) {
+        try {
+            double[] d = om.readValue(json, double[].class);
+            float[] f = new float[d.length];
+            for (int i = 0; i < d.length; i++) f[i] = (float) d[i];
+            return f;
+        } catch (Exception e) { return new float[0]; }
+    }
+}
+```
+
+- [ ] **Step 6: application.yml 配置 + AgentChatService 接入**
+
+```yaml
+  cache:
+    similarity-threshold: 0.95   # 命中阈值(spec §8)
+    recent-max: 200              # 候选集上限(算余弦的条目数)
+```
+
+AgentChatService.stream 开头加缓存分支,完成时 put:
+
+```java
+public void stream(String question, Long conversationId, SseEmitter emitter) {
+    long t0 = System.currentTimeMillis();
+    Optional<ChatCacheService.CacheHit> hit = chatCache.lookup(question);
+    if (hit.isPresent()) {                 // 命中:直返缓存,不调 Python(省 Token/降延迟)
+        emitCacheAnswer(hit.get(), emitter);
+        observabilityService.saveSpan(conversationId, question, System.currentTimeMillis() - t0,
+                Map.of(), true);
+        return;
+    }
+    // ...原有透传流程
+}
+
+private void emitCacheAnswer(ChatCacheService.CacheHit hit, SseEmitter emitter) {
+    try {
+        emitter.send(SseEmitter.event().name("cache_hit").data("{\"seq\":1,\"data\":true}"));
+        emitter.send(SseEmitter.event().name("answer").data("{\"seq\":2,\"data\":" + om.writeValueAsString(hit.answer()) + "}"));
+        emitter.send(SseEmitter.event().name("source").data("{\"seq\":3,\"data\":" + hit.sourcesJson() + "}"));
+        emitter.send(SseEmitter.event().name("done").data("{\"seq\":4,\"data\":null}"));
+        emitter.complete();
+    } catch (Exception e) { emitter.completeWithError(e); }
+}
+```
+
+> 透传分支的 `source` 事件到达时暂存 `sourcesJson` 字符串,`done` 时 `chatCache.put(question, answer.toString(), sourcesJson)`(缓存完整回答)。
+> 注:Task 9 的 `observabilityService` 在此处被引用——若先做本任务,可先注入并仅保存 cacheHit 字段,Task 9 补全字段(两任务同批提交更顺)。
+
+- [ ] **Step 7: 验证**
+
+```bash
+cd backend && mvn spring-boot:run
+# 第一次(未命中,正常走 Agent):curl -N ... -d '{"message":"OpenWrt 无线配置步骤"}'
+# 第二次(命中):curl -N ... -d '{"message":"OpenWrt 无线配置步骤"}'
+# 期望:第二次立即返回 cache_hit + 整段 answer(无流式逐字),无 Python 调用(Java 日志无转发)
+# 相似问题(换措辞)也能命中:curl -N ... -d '{"message":"OpenWrt 无线怎么配置"}'
+redis-cli LLEN chat:cache:recent          # 缓存条数
+```
+
+- [ ] **Step 8: 提交**
+
+```bash
+git add -A && git commit -m "feat: semantic cache with embedding similarity >0.95"
+```
+
+**验收**:CosineSimilarityTest 5/5 PASS;同问题二次命中(cache_hit 事件、无流式);换措辞相似问题命中;缓存条数在 recent-max 内。
+
+---
+
+### Task 9: Java 工程化#3:可观测(每轮 span 落库)+ /api/stats
+
+> 最小化 span 概念,不引 OpenTelemetry:每轮对话一条 rag_span 落库(各阶段耗时/缓存命中),/api/stats 出聚合指标——面试量化素材来源。
+
+**Files:**
+- Create: `backend/src/main/java/com/kbrag/obs/RagSpan.java`(实体)
+- Create: `backend/src/main/java/com/kbrag/obs/RagSpanRepository.java`
+- Create: `backend/src/main/java/com/kbrag/obs/ObservabilityService.java`
+- Modify: `backend/src/main/java/com/kbrag/chat/AgentChatService.java`(done 时落 span;已收集 phaseMs)
+- Create: `backend/src/main/java/com/kbrag/stats/StatsController.java`
+
+**Interfaces:**
+- Consumes: phaseMs(Task 7 已收集:rewrite/router/tools/generate/verify 各阶段耗时)、`MessageRepository`/`ConversationRepository`
+- Produces: `ObservabilityService.saveSpan(conversationId, question, gatewayMs, phaseMs, cacheHit)`;`GET /api/stats -> {docCount, chunkCount, avgRetrievalMs, cacheHitRate}`
+
+- [ ] **Step 1: 创建 RagSpan 实体与仓库**
+
+```java
+package com.kbrag.obs;
+
+import jakarta.persistence.*;
+import lombok.Data;
+import java.time.LocalDateTime;
+
+/**
+ * 每轮对话的可观测 span(spec §4.1 observability)。
+ */
+@Data
+@Entity
+@Table(name = "rag_span")
+public class RagSpan {
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+    private Long conversationId;
+    @Column(columnDefinition = "text")
+    private String question;
+    private Integer gatewayMs;    // Java 转发全程耗时
+    private Integer rewriteMs;    // 以下来自 Python phase 事件
+    private Integer routerMs;
+    private Integer toolsMs;      // 检索阶段(≈检索耗时)
+    private Integer generateMs;   // LLM 生成
+    private Integer verifyMs;
+    private Boolean cacheHit;     // 是否语义缓存命中
+    private LocalDateTime createdAt = LocalDateTime.now();
+}
+```
+
+```java
+package com.kbrag.obs;
+
+import org.springframework.data.jpa.repository.JpaRepository;
+import java.util.List;
+
+public interface RagSpanRepository extends JpaRepository<RagSpan, Long> {
+    List<RagSpan> findTop100ByOrderByIdDesc();   // 最近 100 轮(聚合指标用)
+}
+```
+
+- [ ] **Step 2: 实现 ObservabilityService**
+
+```java
+package com.kbrag.obs;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
+import java.util.Map;
+
+@Service
+public class ObservabilityService {
+    @Autowired private RagSpanRepository spans;
+
+    public void saveSpan(Long conversationId, String question, long gatewayMs,
+                         Map<String, Integer> phaseMs, boolean cacheHit) {
+        RagSpan s = new RagSpan();
+        s.setConversationId(conversationId);
+        s.setQuestion(question);
+        s.setGatewayMs((int) gatewayMs);
+        s.setRewriteMs(phaseMs.getOrDefault("rewrite", 0));
+        s.setRouterMs(phaseMs.getOrDefault("router", 0));
+        s.setToolsMs(phaseMs.getOrDefault("tools", 0));
+        s.setGenerateMs(phaseMs.getOrDefault("generate", 0));
+        s.setVerifyMs(phaseMs.getOrDefault("verify", 0));
+        s.setCacheHit(cacheHit);
+        spans.save(s);
+    }
+}
+```
+
+- [ ] **Step 3: AgentChatService done 时落 span**
+
+```java
+// stream 方法:记录 t0,透传分支 done 事件里:
+if ("done".equals(event)) {
+    emitter.complete();
+    save(conversationId, question, answer.toString());
+    observabilityService.saveSpan(conversationId, question,
+            System.currentTimeMillis() - t0, phaseMs, false);
+}
+```
+
+- [ ] **Step 4: 实现 StatsController**
+
+```java
+package com.kbrag.stats;
+
+import com.kbrag.document.DocumentChunkRepository;
+import com.kbrag.document.DocumentRepository;
+import com.kbrag.obs.RagSpan;
+import com.kbrag.obs.RagSpanRepository;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.util.List;
+import java.util.Map;
+
+/**
+ * 知识库统计(spec §7 GET /api/stats):文档/分块数、平均检索耗时、缓存命中率。
+ */
+@RestController
+public class StatsController {
+    @Autowired private DocumentRepository documents;
+    @Autowired private DocumentChunkRepository chunks;
+    @Autowired private RagSpanRepository spans;
+
+    @GetMapping("/api/stats")
+    public Map<String, Object> stats() {
+        List<RagSpan> recent = spans.findTop100ByOrderByIdDesc();
+        double avgTools = recent.stream().mapToInt(RagSpan::getToolsMs)
+                .filter(v -> v > 0).average().orElse(0);
+        long hitCount = recent.stream().filter(RagSpan::getCacheHit).count();
+        double hitRate = recent.isEmpty() ? 0 : hitCount * 1.0 / recent.size();
+        return Map.of(
+                "docCount", documents.count(),
+                "chunkCount", chunks.count(),
+                "avgRetrievalMs", Math.round(avgTools),      // 近 100 轮检索(工具阶段)均值
+                "cacheHitRate", Math.round(hitRate * 100) / 100.0);
+    }
+}
+```
+
+- [ ] **Step 5: 验证**
+
+```bash
+cd backend && mvn spring-boot:run && cd ../python && uvicorn app.main:app --port 9100 &
+# 问 3 轮(含 1 次缓存命中):
+curl -N -X POST http://localhost:9000/api/chat -H "Content-Type: application/json" -d '{"message":"OpenWrt 无线配置步骤"}' > /dev/null
+curl -N -X POST http://localhost:9000/api/chat -H "Content-Type: application/json" -d '{"message":"OpenWrt 无线配置步骤"}' > /dev/null  # 命中缓存
+psql postgresql://kbrag:kbrag123@localhost:5433/kbrag -c "SELECT rewrite_ms, router_ms, tools_ms, generate_ms, verify_ms, cache_hit FROM rag_span ORDER BY id DESC LIMIT 3;"
+# 期望:有记录的 span 各阶段耗时 >0;命中那轮 cache_hit=true 且其他字段为 0
+curl http://localhost:9000/api/stats
+# 期望:{"docCount":N,"chunkCount":N,"avgRetrievalMs":xx,"cacheHitRate":0.xx}
+```
+
+- [ ] **Step 6: 提交**
+
+```bash
+git add -A && git commit -m "feat: per-turn rag spans and stats endpoint"
+```
+
+**验收**:每轮 rag_span 落库(各阶段耗时可查);/api/stats 返回四项指标;命中轮 cache_hit=true。
 
 ---
 
 ## Self-Review 记录
 
 **Spec 覆盖(2026-08-08 spec):**
-- §4.2 五节点图(改写/Router/工具/生成/自检)→ Task 5
-- §4.2 防护(最大步数 8 / 工具超时 10s / 重复调用检测 / 错误自然语言化)→ Task 4 Step 1 + Task 5 Step 10(recursion_limit)
-- §4.2 记忆滑动窗口 → Task 6 Step 5(Java 取最近 10 条);双压缩策略 → 移 Phase 3(见偏差说明)
+- §4.2 五节点图(改写/Router/工具/生成/自检)→ Task 6
+- §4.2 防护(最大步数 8 / 工具超时 10s / 重复调用检测 / 错误自然语言化)→ Task 4 + Task 6(recursion_limit)
+- §4.2 记忆滑动窗口 → Task 7 Step 5(Java 取最近 10 条);双压缩策略 → 移 Phase 3(见偏差说明)
 - §4.1 tool-service(`/api/agent/tools/search|get-doc-detail|get-stats` + tool_call_log)→ Task 2
 - §7 `GET /api/agent/health` → Task 2 Step 4
-- §3.1 全链路 SSE 透传 → Task 6
-- §8 检索无结果拒答 → Task 5 Step 8(generate 空 contexts 直接说明)
-- §8 事件 seq → Task 6 Step 1(emit 递增 seq)
+- §3.1 全链路 SSE 透传 → Task 7
+- §8 检索无结果拒答 → Task 6 Step 8(generate 空 contexts 直接说明)
+- §8 事件 seq → Task 7 Step 1(emit 递增 seq)
+- §8 限流与熔断:用户级令牌桶限流(Redis Lua)→ **Task 5**;熔断/重试(Resilience4j)→ 留 Phase 3(与 rerank A/B 同批,偏差说明已标注)
+- §8 语义缓存(embedding 相似度 >0.95)→ **Task 8**
+- §4.1 observability(每轮 span)→ **Task 9**(最小化:落库 rag_span,不引 OpenTelemetry,后续可平滑换 Micrometer/OTel)
+- §7 `GET /api/stats` → **Task 9**
 - 降级预案(Java 直连 LLM)→ ChatService 保留,Phase 3 做开关。**无遗漏。**
 
-**占位符扫描:** 无 TBD/TODO;tools_node 为 Step 6 两阶段完整实现(LLM function calling 决定 + 执行,含 _parse_hits);run_agent 单次 astream_events 完成采集(无二次 ainvoke);所有节点对 LLM 响应统一用 `getattr(resp, "content", "")` 防御性取值,与 FakeChat 的 SimpleNamespace 形态一致。
+**占位符扫描:** 无 TBD/TODO;tools_node 为 Task 6 Step 6 两阶段完整实现(LLM function calling 决定 + 执行,含 _parse_hits);run_agent 单次 astream_events 完成采集(无二次 ainvoke);所有节点对 LLM 响应统一用 `getattr(resp, "content", "")` 防御性取值,与 FakeChat 的 SimpleNamespace 形态一致;Task 8 的 emitCacheAnswer 引用 observabilityService 已注明与 Task 9 的同批提交关系。
 
 **类型一致性:**
 - `JavaClient` 方法 `search_kb/get_doc_detail/get_stats` 与 `execute_tool` 映射、Java 端点路径一致
 - LLM tool_calls 契约:`[{"name": str, "args": dict}]`——langchain 解析 DeepSeek function calling 后的标准形态,tools_node 消费、测试用 SimpleNamespace(tool_calls=[...]) 对齐
-- `run_agent` 产出 `(kind, payload)` 元组:answer/sources/done,与 Task 6 event_stream 消费一致;SSE 事件名 `answer/source/done/error` 与 Phase 1 前端 index.html 解析一致
+- `run_agent` 产出 `(kind, payload)` 元组:answer/phase/sources/done;phase payload 为 `{"node", "elapsedMs"}`——sse.py `emit("phase", payload)` 原样透传,Java 解析 `{"seq":n,"data":{"node","elapsedMs"}}` 三方一致
+- SSE 事件名:`answer/source/done/error`(Phase 1 前端解析)+ `phase`/`cache_hit`(前端忽略未知事件,兼容)
 - `AgentState` 字段在 nodes/graph/sse 间一致(`question/history/needs_retrieval/contexts/answer/sources/attempts/verified/error/tool_calls`)
 - Java `AgentChatService.stream` 签名与 ChatController 调用一致;`Message`/`Conversation` 为 Lombok getter/setter(Phase 1 已统一)
-- `app.agent.base-url` 为 Java 侧唯一配置点(AgentHealthController 与 AgentChatService 同源,application.yml)
+- `app.agent.base-url` 为 Java 侧唯一配置点(AgentHealthController 与 AgentChatService 同源,application.yml);`app.rate-limit`/`app.cache` 各自独立配置块
+- TokenBucket/RateLimiter、CosineSimilarity/ChatCacheService 均"纯算法类可单测 + 存储层薄封装"模式,与 Phase 1 的 RrfFusion/HeadingAwareChunker 一致
