@@ -5,3 +5,9 @@ target/
 *.iml
 .DS_Store
 docs/test/
+
+# Python
+python/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
