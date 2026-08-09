@@ -40,13 +40,13 @@ public class DocumentService {
 
     public Document upload(MultipartFile file) throws IOException {
         Document doc = new Document();
-        doc.title = file.getOriginalFilename();
-        doc.uploader = 0L;
+        doc.setTitle(file.getOriginalFilename());
+        doc.setUploader(0L);
         documents.save(doc);
         // MultipartFile 背后是 Tomcat 临时文件，请求结束后会被删除；
         // 必须先在请求线程内把内容读成字节数组，再交给异步线程处理
         byte[] bytes = file.getBytes();
-        self.processAsync(doc.id, bytes, file.getOriginalFilename());   // 必须经代理调用，@Async 才生效
+        self.processAsync(doc.getId(), bytes, file.getOriginalFilename());   // 必须经代理调用，@Async 才生效
         return doc;
     }
 
@@ -58,25 +58,25 @@ public class DocumentService {
             List<Chunk> parsed = chunker.chunk(text);
             List<DocumentChunk> entities = parsed.stream().map(c -> {
                 DocumentChunk e = new DocumentChunk();
-                e.docId = docId;
-                e.chunkIndex = c.index();
-                e.content = c.content();
-                e.headingPath = c.headingPath();
-                e.tokenCount = c.content().length(); // 中英混排近似，Phase 3 换真实 token 统计
+                e.setDocId(docId);
+                e.setChunkIndex(c.index());
+                e.setContent(c.content());
+                e.setHeadingPath(c.headingPath());
+                e.setTokenCount(c.content().length()); // 中英混排近似，Phase 3 换真实 token 统计
                 return e;
             }).toList();
             // 向量化 + 关键词分词
             List<String> contents = parsed.stream().map(Chunk::content).toList();
             List<float[]> vectors = embeddingService.embed(contents);
             for (int i = 0; i < entities.size(); i++) {
-                entities.get(i).embedding = vectors.get(i);   // float[] 直接赋值(hibernate-vector 映射)
-                entities.get(i).segmentedText = tokenizer.segment(entities.get(i).content);
+                entities.get(i).setEmbedding(vectors.get(i));   // float[] 直接赋值(hibernate-vector 映射)
+                entities.get(i).setSegmentedText(tokenizer.segment(entities.get(i).getContent()));
             }
             chunks.saveAll(entities);
-            doc.status = DocumentStatus.READY;
+            doc.setStatus(DocumentStatus.READY);
         } catch (Exception ex) {
-            doc.status = DocumentStatus.FAILED;
-            doc.errorMessage = ex.getMessage();
+            doc.setStatus(DocumentStatus.FAILED);
+            doc.setErrorMessage(ex.getMessage());
         }
         documents.save(doc);
     }

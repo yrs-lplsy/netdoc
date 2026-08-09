@@ -33,7 +33,7 @@ public class DocumentController {
     @GetMapping
     public List<Document> list(@RequestParam(required = false) String status) {
         return status == null ? documents.findAll() : documents.findAll().stream()
-                .filter(d -> d.status.name().equalsIgnoreCase(status)).toList();
+                .filter(d -> d.getStatus().name().equalsIgnoreCase(status)).toList();
     }
 
     @DeleteMapping("/{id}")
