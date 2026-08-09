@@ -110,7 +110,7 @@
 | Milvus/Chroma 向量库 | PG + pgvector(零新组件) | "当前规模单机够用,迁移路径已设计" |
 | Neo4j/Nebula 图数据库 | PG 三元组表(实体+关系) | "轻量落地,规模化/多跳再迁图库" |
 | vLLM 本地推理 | DeepSeek + BGE-M3 API | "LLM 服务化接入,可替换" |
-| K8s 部署 | Docker Compose 单机 | "镜像化已为 K8s 预留" |
+| K8s 部署 | Docker Compose 单机 | Java/Python 均无状态、配置外置(环境变量注入)、存储依赖独立 PG/Redis 服务,可直接转 Deployment+Service,水平扩容仅需调整副本数;Compose 编排可一键转换 K8s 资源清单 |
 | 数据脱敏/内容审核 | 文档级元数据 + 权限控制 | "企业级增强项,已规划未实现" |
 
 ---
@@ -137,17 +137,26 @@ Java DocumentService.processAsync(入库完成)
 - 抽取质量:LLM 抽取 + 实体词典归一(OpenWrt/openwrt/旁路由 → 同一实体)+ 低置信关系丢弃
 - 抽取器接口化:Python 侧实现可替换(后续换 UIE/领域模型)
 
-### 4.3 图谱检索链路(查询时零 LLM,毫秒级)
+### 4.3 图谱检索链路(查询时零 LLM,毫秒级)——三路召回 + RRF 融合
 
 ```
 用户问题
    → Java 实体链接:jieba 分词 + 实体匹配(词典即 kg_entity 表的 name/normalized_name 列,
      按 kb_id 过滤,无需独立维护词典)→ 命中实体
-   → 一跳邻居扩展:SQL 取命中实体的关系与邻居实体
-   → 关联文档召回:邻居实体/关系关联的 doc_id → 追加进 RRF 候选池(与向量/关键词双路融合)
-   → 混合排序 → Top5 进 Prompt(带实体关系上下文)
+   → 一跳邻居扩展:SQL 取命中实体的关系与邻居实体 → 关联 doc_id 集合(图谱路)
+   → 三路召回统一 RRF 融合:
+       ① 关键词路(tsvector 检索, TopK=20)
+       ② 向量路(pgvector 检索, TopK=20)
+       ③ 图谱路(实体邻居关联文档, TopK=20)
+       RRF(k=60,与 Phase 1 一致)融合 → Top10 → 截断 Top5
+   → 图谱上下文段:命中实体 + 关系 + 邻居实体拼接为结构化上下文
+     (如 "实体[OpenWrt] -[USES]-> 实体[luci]"),随文本片段一起进 Prompt
 ```
 
+**融合规则(面试必问,代码留可配置参数)**:
+- 三路平等进 RRF(无人工权重,鲁棒、面试好讲);RRF k=60;各路 TopK=20;融合后取 Top5 进 Prompt
+- 全部参数在 application.yml:`app.retrieval.dense-top-k / sparse-top-k / kg-top-k / rrf-k / final-top-k / kg-context-enabled`
+- 图谱路只提供"关联文档召回 + 图谱上下文段",不参与打分排序(排序仍由 RRF 决定)
 - 查询路径零 LLM 依赖,不增加对话延迟(面试量化点)
 - 检索结果不理想时可选升级:LLM 实体识别(配置开关,默认关)
 
@@ -239,9 +248,9 @@ message(id, conversation_id, role, content TEXT, sources_json TEXT, feedback SMA
 -- 知识图谱(新增,§4.4)
 kg_entity / kg_relation
 
--- 工具调用审计(已有)
-tool_call_log(id, conversation_id, tool_name, input_json JSONB, output_summary TEXT,
-              latency_ms INT, ok BOOL, created_at)
+-- 工具调用审计(已有,加幂等键)
+tool_call_log(id, conversation_id, tool_name, idempotent_key TEXT UNIQUE /*conversation_id+agent_step_id*/,
+              input_json JSONB, output_summary TEXT, latency_ms INT, ok BOOL, created_at)
 
 -- 可观测(已有)
 rag_span(id, conversation_id, question TEXT, gateway_ms, rewrite_ms, router_ms,
@@ -306,17 +315,20 @@ eval_result(id, case_id, strategy JSONB, recall_10 FLOAT, mrr FLOAT, faithfulnes
 
 ### 8.3 Agent 工具调用
 
-Python 决策要调工具 → 请求 Java 工具端点(带服务凭证)→ Java 执行(权限/审计)→ 返回结果 → Python 继续推理
+Python 决策要调工具(调用带 agent_step_id)→ 请求 Java 工具端点(带服务凭证)→ Java 先校验幂等键(已执行直接返回上次结果)→ 执行(权限/审计)→ 返回结果 → Python 继续推理
 
 ---
 
 ## 9. 错误处理与可靠性
 
 - **Agent 防护**:最大步数 8(recursion_limit)、工具超时 10s、重复工具调用检测、错误自然语言化回喂
+- **工具幂等(双层防线,面试点)**:Python 侧会话内重复检测(JavaClient._seen,内存快速层)+ Java 侧持久化幂等键(`conversation_id + agent_step_id` 唯一索引,DB 兜底层)——防网络重试/崩溃恢复导致的重复执行,已执行直接返回上次结果
 - **LLM 输出约束**:Function Calling JSON Schema 强约束;解析失败重试 1 次,仍失败降级规则回答
 - **检索无结果**:图谱/向量均无命中 → 明确拒答/反问,不硬答
 - **限流**:用户级令牌桶(Redis Lua),超限 429
 - **语义缓存**:embedding 相似度 >0.95 命中直接返回(省 Token、降延迟)
+  - 缓存条目:问题向量 + 回答 + sourcesJson + **kb_id + 库版本戳(kb 内文档 max(updated_at)) + TTL 24h**
+  - 一致性:缓存 key 带 kb_id 命名空间(`chat:cache:{kbId}:*`);**文档上传/删除/重建成功后清该 kb 命名空间**(主动失效)+ 版本戳比对(命中后校验,库变了即失效)+ **TTL 兜底**(防漏清)——面试讲"缓存一致性三件套"
 - **流式可靠性**:事件带 seq;前端断线可重连;各环节超时兜底
 - **降级预案**:Python 不可用 → Java 发 error 事件告知,不静默失败;ChatService(Java 直连 LLM)保留为降级通道
 - **可观测**:每轮 rag_span(各阶段耗时/Token 数/缓存命中);工具调用全量审计;待补:DeepSeek 5xx 熔断(Resilience4j,弹性周)
