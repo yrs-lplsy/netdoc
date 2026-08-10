@@ -23,3 +23,4 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["."]      # 把项目根(python/)显式加进 sys.path
 testpaths = ["tests"]
+asyncio_mode = "auto"   # auto 模式:async 测试自动进事件循环,无需逐个 @pytest.mark.asyncio
