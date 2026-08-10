@@ -33,3 +33,5 @@ app:
     sparse-top-k: 30
     rrf-k: 60
     final-top-k: 5
+  agent:
+    base-url: http://localhost:9100   # Python Agent 服务地址
