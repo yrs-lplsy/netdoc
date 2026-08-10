@@ -944,7 +944,7 @@ public class ChatController {
         }
         SseEmitter emitter = new SseEmitter(180_000L);
         executor.execute(() -> agentChatService.stream(req.message(), req.conversationId(), emitter));
-        return ResponseEntity.ok().contentType(MediaType.TEXT_EVENT_STREAM_VALUE).body(emitter);
+        return ResponseEntity.ok().contentType(MediaType.TEXT_EVENT_STREAM).body(emitter);
     }
 
     private String clientIp(HttpServletRequest req) {
@@ -1063,14 +1063,14 @@ def base_state():
 
 # ---- Router ----
 
-async def test_router_direct_chat_skips_retrieval():
+async def test_router_direct_chat_skips_retrieval(base_state):
     from app.nodes.router import router_node
     fake = FakeChat(['{"needs_retrieval": false}'])
     state = await router_node(dict(base_state), fake)
     assert state["needs_retrieval"] is False
 
 
-async def test_router_invalid_json_defaults_to_retrieve():
+async def test_router_invalid_json_defaults_to_retrieve(base_state):
     from app.nodes.router import router_node
     fake = FakeChat(["不是 JSON"])
     state = await router_node(dict(base_state), fake)
@@ -1079,7 +1079,7 @@ async def test_router_invalid_json_defaults_to_retrieve():
 
 # ---- Tools(两阶段:LLM function calling 决定 → 执行)----
 
-async def test_tools_node_decides_and_executes():
+async def test_tools_node_decides_and_executes(base_state):
     from app.nodes.tools_node import tools_node
     call = {"name": "search_kb", "args": {"query": "安装", "top_k": 5}}
     fake_chat = FakeChat([SimpleNamespace(content="", tool_calls=[call])])
@@ -1090,7 +1090,7 @@ async def test_tools_node_decides_and_executes():
     assert out["tool_calls"] == [call]
 
 
-async def test_tools_node_duplicate_call_deduped():
+async def test_tools_node_duplicate_call_deduped(base_state):
     from app.nodes.tools_node import tools_node
     call = {"name": "search_kb", "args": {"query": "安装", "top_k": 5}}
     fake_client = FakeJavaClient()
@@ -1104,7 +1104,7 @@ async def test_tools_node_duplicate_call_deduped():
 
 # ---- Verify(attempts 递增 + PASS/FAIL 判定 + FAIL 理由回喂)----
 
-async def test_verify_fail_marks_retry():
+async def test_verify_fail_marks_retry(base_state):
     from app.nodes.verify import verify_node
     fake = FakeChat(["FAIL 回答中包含了资料没有的信息"])
     state = await verify_node(dict(base_state), fake)
@@ -1113,7 +1113,7 @@ async def test_verify_fail_marks_retry():
     assert "未通过" in state["error"]  # FAIL 理由写入 error,回喂 rewrite
 
 
-async def test_verify_pass():
+async def test_verify_pass(base_state):
     from app.nodes.verify import verify_node
     fake = FakeChat(["PASS 回答忠实于资料"])
     state = await verify_node(dict(base_state), fake)
@@ -1141,7 +1141,7 @@ class FakeStreamChat:
             yield SimpleNamespace(content=t)
 
 
-async def test_generate_rejects_when_no_contexts_and_retrieval_needed():
+async def test_generate_rejects_when_no_contexts_and_retrieval_needed(base_state):
     from app.nodes.generate import generate_node
     state = dict(base_state)  # needs_retrieval=True
     out = await generate_node(state, FakeStreamChat(["资料"]))
@@ -1149,7 +1149,7 @@ async def test_generate_rejects_when_no_contexts_and_retrieval_needed():
     assert out["sources"] == []
 
 
-async def test_generate_answers_direct_chat_without_contexts():
+async def test_generate_answers_direct_chat_without_contexts(base_state):
     from app.nodes.generate import generate_node
     state = dict(base_state)
     state["needs_retrieval"] = False  # Router 判定闲聊,直接自然回答
