@@ -27,14 +27,14 @@ public class ChatController {
     public record ChatRequest(String message, Long conversationId) {}
 
     @PostMapping(produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public ResponseEntity<?> chat(@RequestBody ChatRequest req, HttpServletRequest http) {
+    public ResponseEntity<SseEmitter> chat(@RequestBody ChatRequest req, HttpServletRequest http) {
         String userId = clientIp(http);   // 无登录态,用 IP 作为用户标识(登录后换 userId,维度不变)
         if (!rateLimiter.tryAcquire(userId)) {
-            return ResponseEntity.status(429).body("请求过于频繁,请稍后再试");
+            return ResponseEntity.status(429).build();
         }
         SseEmitter emitter = new SseEmitter(180_000L);
         executor.execute(() -> agentChatService.stream(req.message(), req.conversationId(), emitter));
-        return ResponseEntity.ok().contentType(MediaType.TEXT_EVENT_STREAM).body(emitter);
+        return ResponseEntity.ok().body(emitter);
     }
 
     private String clientIp(HttpServletRequest req) {

@@ -10,6 +10,7 @@
 <button onclick="ask()">提问</button>
 <div id="out"></div>
 <script>
+let CONVERSATION_ID = null;   // 多轮会话:done 后由 conversation 事件回传
 async function ask() {
   const q = document.getElementById('q').value;
   const out = document.getElementById('out');
@@ -17,8 +18,9 @@ async function ask() {
   const resp = await fetch('/api/chat', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({message: q})
+    body: JSON.stringify({message: q, conversationId: CONVERSATION_ID})
   });
+  if (!resp.ok) { out.textContent = '请求失败(' + resp.status + '): ' + await resp.text(); return; }   // 限流 429 提示
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '', eventName = '';
@@ -34,6 +36,7 @@ async function ask() {
       else if (line.startsWith('data:')) {
         const ev = JSON.parse(line.slice(5));
         if (eventName === 'answer' && ev.data) out.querySelector('pre').textContent += ev.data;
+        else if (eventName === 'conversation') CONVERSATION_ID = ev.data.conversationId;   // 存会话 id,续聊自动带上
         else if (eventName === 'source')
           document.getElementById('src').textContent = '来源: ' + ev.data.map(s => s.title).join(' / ');
       }

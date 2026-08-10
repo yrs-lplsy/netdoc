@@ -45,10 +45,11 @@ public class AgentChatService {
                         .toList();
         // 滑动窗口:只取最近 10 条(升序列表取尾部)
         history = history.size() > 10 ? history.subList(history.size() - 10, history.size()) : history;
-        Map<String, Object> body = Map.of(
-                "message", question,
-                "conversation_id", conversationId,
-                "history", history);
+        // 用 HashMap:conversation_id 为 null 时(新会话)Map.of 会 NPE(不可变集合禁止 null)
+        Map<String, Object> body = new HashMap<>();
+        body.put("message", question);
+        body.put("conversation_id", conversationId);
+        body.put("history", history);
 
         Flux<ServerSentEvent<String>> stream = webClient.post()
                 .uri("/agent/chat")
@@ -82,8 +83,13 @@ public class AgentChatService {
                         }
                         emitter.send(SseEmitter.event().name(event).data(data));
                         if ("done".equals(event)) {
+                            // 落库并回传会话 id(新建会话时前端需要它续聊——多轮对话闭环)
+                            Long cid = save(conversationId, question, answer.toString());
+                            try {
+                                emitter.send(SseEmitter.event().name("conversation")
+                                        .data("{\"seq\":999,\"data\":{\"conversationId\":" + cid + "}}"));
+                            } catch (Exception ignored) { }
                             emitter.complete();
-                            save(conversationId, question, answer.toString());
                         }
                     } catch (Exception e) {
                         emitter.completeWithError(e);
@@ -99,7 +105,8 @@ public class AgentChatService {
                 emitter::complete);
     }
 
-    private void save(Long conversationId, String user, String assistant) {
+    /** 落库 user/assistant;返回会话 id(conversationId 为 null 时新建并返回新 id)。 */
+    private Long save(Long conversationId, String user, String assistant) {
         if (conversationId == null) {
             Conversation c = new Conversation();
             c.setTitle(user.length() > 20 ? user.substring(0, 20) : user);
@@ -112,5 +119,6 @@ public class AgentChatService {
         m2.setConversationId(conversationId); m2.setRole("assistant"); m2.setContent(assistant);
         messages.save(m1);
         messages.save(m2);
+        return conversationId;
     }
 }

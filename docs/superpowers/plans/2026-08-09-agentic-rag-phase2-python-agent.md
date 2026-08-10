@@ -1649,7 +1649,7 @@ async def test_event_stream_sequence():
 
     events = [e async for e in event_stream(AgentChatRequest(message="你好"))]
     names = [e["event"] for e in events]
-    assert names == ["answer", "source", "done"]
+    assert names == ["phase", "answer", "source", "done", "done"]  # phase 透传 + finally 兜底 done
     # seq 递增
     seqs = [json.loads(e["data"])["seq"] for e in events]
     assert seqs == [1, 2, 3]
