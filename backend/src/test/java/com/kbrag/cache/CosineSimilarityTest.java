@@ -28,11 +28,12 @@ class CosineSimilarityTest {
         Map<String, float[]> candidates = Map.of(
                 "a", new float[]{1f, 0f},
                 "b", new float[]{0.5f, 0.866f});  // 与 query 夹角 60°,相似度 0.5
-        assertEquals("a", ChatCacheService.selectBest(candidates, new float[]{1f, 0f}, 0.95));
+        assertEquals("a", CosineSimilarity.selectBest(candidates, new float[]{1f, 0f}, 0.95));
+        assertNull(CosineSimilarity.selectBest(Map.of("a", new float[]{0f, 1f}), new float[]{1f, 0f}, 0.95));
     }
 
     @Test
     void none_above_threshold_returns_null() {
-        assertNull(ChatCacheService.selectBest(Map.of("a", new float[]{0f, 1f}), new float[]{1f, 0f}, 0.95));
+        assertNull(CosineSimilarity.selectBest(Map.of("a", new float[]{0f, 1f}), new float[]{1f, 0f}, 0.95));
     }
 }

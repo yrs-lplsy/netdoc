@@ -44,6 +44,10 @@ async def run_agent(input_state: dict):
         kind = event.get("event")
         node = event.get("metadata", {}).get("langgraph_node", "")  # v2 事件标准字段,比 name 更可靠
         if kind == "on_chat_model_stream":
+            # chat_model 配了 streaming=True → 所有节点的 ainvoke 也产生流事件;
+            # 只转发 generate 的 token,rewrite/router/tools/verify 的输出(改写词/决策 JSON)不外发
+            if node != "generate":
+                continue
             chunk = event["data"].get("chunk")
             token = chunk.content if chunk else ""
             if token:
@@ -52,6 +56,10 @@ async def run_agent(input_state: dict):
             start_ns[node] = time.monotonic_ns()
         elif kind == "on_chain_end" and node in NODE_NAMES:
             output = event["data"].get("output") or {}
+            # langgraph 1.x:条件边 path 函数(route_decision/verify_decision)的 END 事件
+            # 与节点同名且 output 是 str(路由目标);只有节点本体的 output 才是 state dict
+            if not isinstance(output, dict):
+                continue
             if node == "generate":
                 final_answer = output.get("answer", "")
                 sources = output.get("sources") or []

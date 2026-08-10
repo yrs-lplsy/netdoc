@@ -56,6 +56,7 @@ public class ChatCacheService {
             answers.put(id, (String) entry.get("answer"));
             sources.put(id, (String) entry.get("sourcesJson"));
         }
+        // 遍历每个 id:读 hash 条目 → 解析 embedding → 收集 candidates/answers/sources
         String best = CosineSimilarity.selectBest(candidates, qv, threshold);
         if (best == null) return Optional.empty();
         return Optional.of(new CacheHit(answers.get(best), sources.get(best)));

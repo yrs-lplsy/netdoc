@@ -118,7 +118,7 @@ SILICONFLOW_API_KEY = os.getenv("SILICONFLOW_API_KEY", "")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
 JAVA_BASE_URL = os.getenv("JAVA_BASE_URL", "http://localhost:9000")
 TOOL_TIMEOUT_SECONDS = float(os.getenv("TOOL_TIMEOUT_SECONDS", "10"))
-MAX_STEPS = int(os.getenv("MAX_STEPS", "8"))
+MAX_STEPS = int(os.getenv("MAX_STEPS", "16"))  # 一轮5层,retry第二轮最多10层;16留余量(死循环由verify attempts兜底)
 ```
 
 > `python/.env.example`:文档占位,列出可覆盖的环境变量(`JAVA_BASE_URL`/`TOOL_TIMEOUT_SECONDS`/`MAX_STEPS`);默认值已内联在 config.py,且从 backend/.env 读取真实密钥,一般无需创建 python/.env。

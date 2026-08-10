@@ -16,6 +16,7 @@ chat_model = ChatOpenAI(
     model=DEEPSEEK_MODEL,
     temperature=0.3,
     streaming=True,
+    request_timeout=60,   # DeepSeek 不稳定时快速失败走降级,不无限挂起
 )
 
 embeddings_model = OpenAIEmbeddings(

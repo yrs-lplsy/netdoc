@@ -18,6 +18,7 @@ import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * 全链路 SSE 透传:前端 ← Java ← Python Agent。
@@ -28,20 +29,23 @@ public class AgentChatService {
     private final WebClient webClient;
     private final MessageRepository messages;
     private final ConversationRepository conversations;
+    private final ChatCacheService chatCache;
     private final ObjectMapper om = new ObjectMapper();
 
     public AgentChatService(WebClient.Builder builder,
                             MessageRepository messages,
                             ConversationRepository conversations,
+                            ChatCacheService chatCache,
                             @Value("${app.agent.base-url:http://localhost:9100}") String agentBaseUrl) {
         this.webClient = builder.baseUrl(agentBaseUrl).build();
         this.messages = messages;
         this.conversations = conversations;
+        this.chatCache = chatCache;
     }
 
     public void stream(String question, Long conversationId, SseEmitter emitter) {
         Optional<ChatCacheService.CacheHit> hit = chatCache.lookup(question);
-        if (hit.isPresent()) {                 // 命中:直返缓存,不调 Python(省 Token/降延迟)
+        if (hit.isPresent()) {                 // 命中:直返缓存,不调 Python(省 Token/降延迟) cache_hit + 整段 answer + source + done(非流式,秒回)
             emitCacheAnswer(hit.get(), emitter);
             // 命中计数由 Task 9 接入(ObservabilityService.saveSpan(..., cacheHit=true)),本任务不依赖 Task 9
             return;
