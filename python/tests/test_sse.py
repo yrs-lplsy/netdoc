@@ -22,4 +22,4 @@ async def test_event_stream_sequence():
     assert names == ["phase", "answer", "source", "done", "done"]
     # seq 递增
     seqs = [json.loads(e["data"])["seq"] for e in events]
-    assert seqs == [1, 2, 3]
+    assert seqs == [1, 2, 3, 4, 5]

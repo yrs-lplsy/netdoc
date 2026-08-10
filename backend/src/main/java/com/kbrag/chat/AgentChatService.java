@@ -65,6 +65,7 @@ public class AgentChatService {
                     try {
                         String event = sse.event();
                         String data = sse.data();
+                        if (data == null) return;   // 心跳/注释帧(sse-starlette 默认 15s ping),透传层过滤,不转发
                         if ("answer".equals(event)) {
                             // data 形如 {"seq":n,"data":"token"}
                             String token = om.readTree(data).path("data").asText("");
