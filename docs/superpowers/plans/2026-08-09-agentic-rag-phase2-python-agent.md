@@ -1746,8 +1746,13 @@ public class AgentChatService {
                         }
                         emitter.send(SseEmitter.event().name(event).data(data));
                         if ("done".equals(event)) {
+                            // 落库并回传会话 id(新建会话时前端需要它续聊——多轮对话闭环)
+                            Long cid = save(conversationId, question, answer.toString());
+                            try {
+                                emitter.send(SseEmitter.event().name("conversation")
+                                        .data("{\"seq\":999,\"data\":{\"conversationId\":" + cid + "}}"));
+                            } catch (Exception ignored) { }
                             emitter.complete();
-                            save(conversationId, question, answer.toString());
                         }
                     } catch (Exception e) {
                         emitter.completeWithError(e);
@@ -1763,7 +1768,8 @@ public class AgentChatService {
                 emitter::complete);
     }
 
-    private void save(Long conversationId, String user, String assistant) {
+    /** 落库 user/assistant;返回会话 id(conversationId 为 null 时新建并返回新 id)。 */
+    private Long save(Long conversationId, String user, String assistant) {
         if (conversationId == null) {
             Conversation c = new Conversation();
             c.setTitle(user.length() > 20 ? user.substring(0, 20) : user);
@@ -1776,6 +1782,7 @@ public class AgentChatService {
         m2.setConversationId(conversationId); m2.setRole("assistant"); m2.setContent(assistant);
         messages.save(m1);
         messages.save(m2);
+        return conversationId;
     }
 }
 ```
@@ -1809,7 +1816,7 @@ curl http://localhost:9000/api/agent/health   # {"java":"UP","agent":"UP"}
 
 - [ ] **Step 9: 浏览器演示验证**
 
-打开 http://localhost:9000 → 提问 → 流式回答 → 引用来源;多轮追问(复用 conversationId 由 Java 自动带历史)。
+打开 http://localhost:9000 → 提问 → 流式回答 → 引用来源;conversation 事件存下 conversationId → 再次提问自动带上(前端 index.html 加 CONVERSATION_ID 变量与 body 字段)→ 多轮指代消解生效。
 
 - [ ] **Step 10: 提交**
 

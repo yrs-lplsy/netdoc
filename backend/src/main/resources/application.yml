@@ -35,3 +35,6 @@ app:
     final-top-k: 5
   agent:
     base-url: http://localhost:9100   # Python Agent 服务地址
+  rate-limit:
+    capacity: 10        # 桶容量:允许突发 10 次
+    refill-per-second: 2  # 每秒补充 2 个令牌
