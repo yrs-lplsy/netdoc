@@ -911,8 +911,9 @@ public class RateLimiter {
     public boolean tryAcquire(String userId) {
         Long r = redis.execute(SCRIPT,
                 List.of("rate:" + userId),
-                List.of(String.valueOf(System.currentTimeMillis()),
-                        String.valueOf(capacity), String.valueOf(refillPerSecond)));
+                // 可变参数逐个展开,不能包成 List(否则整个 List 被当成 args[0],序列化抛 ClassCastException)
+                String.valueOf(System.currentTimeMillis()),
+                String.valueOf(capacity), String.valueOf(refillPerSecond));
         return r != null && r == 1L;
     }
 }
@@ -2243,6 +2244,7 @@ git add -A && git commit -m "feat: per-turn rag spans and stats endpoint"
 | P5-7 | `ddl-auto=update` 与 PG 生成列冲突:数据卷重建后 Hibernate 迁移发 `alter segmented_text set data type text`,PG 拒绝(cannot alter type of a column used by a generated column)→ 启动失败 | 已由实施者修复(commit 056e397):`ddl-auto=none` + schema.sql 全量建表(含 tool_call_log 幂等键字段);面试讲"DDL 全托管" |
 | P5-8 | Task 5 的 ChatController 代码块引用 **Task 7 才创建的 AgentChatService**,且 `contentType(MediaType.TEXT_EVENT_STREAM_VALUE)` 用了 String 常量(编译不过),照抄必失败 | Task 5 Step 6:补完整 import + 前置依赖标注(Java 侧 Task 5/7 同批完成);contentType 改 `MediaType.TEXT_EVENT_STREAM`;Task 7 Step 6 改为"确认不改"(ChatController 已在 Task 5 完成) |
 | P5-9 | Task 8 Step 6 引用 Task 9 的 ObservabilityService,单独做 Task 8 编译不过 | 去掉 `observabilityService.saveSpan` 调用,标注"命中计数由 Task 9 接入";Task 8 依赖边界:只依赖 Task 5 + Phase 1,不依赖 Task 9 |
+| P5-10 | `redis.execute(script, keys, args...)` 的 args 是可变参数,plan 把 `List.of(...)` 整体传入被当成单个 args[0],StringRedisSerializer 序列化 List 抛 ClassCastException(限流 500) | Task 5 Step 5:args 逐个展开传入;运行期验证过(6 连发应 200×3 + 429×3) |
 
 ## Self-Review 记录
 
