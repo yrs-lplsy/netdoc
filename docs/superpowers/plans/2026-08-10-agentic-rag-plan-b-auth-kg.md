@@ -13,6 +13,7 @@
 ## Global Constraints
 
 - kbId 一律走 **query 参数**(如 `POST /api/chat?kbId=1`)——权限切面从 HttpServletRequest 统一取,不解析 body(一致且简单)
+- **DDL 托管**:所有新表/新列写入 `backend/src/main/resources/schema.sql`(Hibernate `ddl-auto=none`);各 Task 的 Files 隐含 Modify schema.sql,新表用 `CREATE TABLE IF NOT EXISTS`,已有表加列用 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS`(幂等,兼容旧库)
 - 权限模型:功能权限(permission)+ 数据权限(role_kb_access READ/WRITE/ADMIN)两层(RBAC0)
 - KG:构建在 Python(抽取/归一/置信度过滤),落库/检索/可视化在 Java;查询路径零 LLM
 - 三路召回:关键词/向量/图谱各 Top20 → RRF(k=60)→ Top10 → Top5 进 Prompt;图谱上下文段随行

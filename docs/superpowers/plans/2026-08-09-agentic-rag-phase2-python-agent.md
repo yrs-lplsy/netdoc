@@ -18,6 +18,7 @@
 - LLM:DeepSeek,base_url `https://api.deepseek.com/v1`,model `deepseek-chat`;Embedding:硅基流动 BGE-M3,base_url `https://api.siliconflow.cn/v1`,model `BAAI/bge-m3`,维度 1024(与 Phase 1 一致)
 - API Key 只从环境变量读取:复用 `backend/.env`(DEEPSEEK_API_KEY / SILICONFLOW_API_KEY),禁止写进代码/git
 - Python 依赖用 uv 管理(pyproject.toml + uv.lock):`uv sync` 安装、`uv run pytest/uvicorn/python` 执行——不用 pip/venv 手动激活;本计划内所有 Python 命令均带 `uv run` 前缀
+- DDL 托管(2026-08-10 用户决策):Hibernate `ddl-auto=none`,所有表结构由 `backend/src/main/resources/schema.sql` 全量维护(生成列与 update 迁移冲突的解法);**新增表/列必须同步写进 schema.sql**(兼容已有库用 `ADD COLUMN IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS` 幂等写法)
 - 端口:Java 9000、Python **9100**、PG 5433、Redis 6379;**8080 被 rpki-system 占用,永远别用**;Python 与 Java 同属 9 系列(隔开 100),完全避开 80 系列防混淆(与 Java 选 9000 同理)
 - SSE 事件名统一:`answer`(delta)/`source`/`done`/`error` + Agent 过程事件 `rewrite`/`router`/`tool`(可选,前端忽略未知事件),事件体带递增 `seq`
 - 防护(与 spec §8 一致):最大步数 8(recursion_limit)、工具超时 10s(httpx timeout)、重复工具调用检测、错误信息自然语言化回喂 LLM

@@ -13,6 +13,7 @@
 ## Global Constraints
 
 - 评测离线可跑,不依赖前端;指标计算纯 Java 可单测
+- **DDL 托管**:新表(eval_case/eval_result 等)写入 `backend/src/main/resources/schema.sql`(ddl-auto=none,沿用 Plan A/B 约定;Task 1 的 Files 隐含 Modify schema.sql)
 - 忠实度 judge:DeepSeek(与 chat 同一模型),prompt 强约束 PASS/FAIL + 分数
 - 对照实验:同一评测集,strategy ∈ {baseline(双路), kg_enhanced(三路)},逐条跑,结果入 eval_result
 - 知识包格式:JSON(v1),含文档元数据/chunk 摘要/KG 三元组/关键词索引;端侧加载为"离线兜底检索"素材(概念验证)

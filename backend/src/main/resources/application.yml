@@ -10,7 +10,7 @@ spring:
     password: kbrag123
   jpa:
     hibernate:
-      ddl-auto: update
+      ddl-auto: none     # update → none:DDL 全部由 schema.sql 托管(生成列与 update 迁移冲突)
     defer-datasource-initialization: true
   sql:
     init:
