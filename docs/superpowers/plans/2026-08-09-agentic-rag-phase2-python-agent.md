@@ -1652,7 +1652,7 @@ async def test_event_stream_sequence():
     assert names == ["phase", "answer", "source", "done", "done"]  # phase 透传 + finally 兜底 done
     # seq 递增
     seqs = [json.loads(e["data"])["seq"] for e in events]
-    assert seqs == [1, 2, 3]
+    assert seqs == [1, 2, 3, 4, 5]   # 与 5 个事件一一对应
 ```
 
 - [ ] **Step 4: 运行 Python 测试**
