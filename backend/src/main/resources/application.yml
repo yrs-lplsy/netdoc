@@ -38,3 +38,6 @@ app:
   rate-limit:
     capacity: 10        # 桶容量:允许突发 10 次
     refill-per-second: 2  # 每秒补充 2 个令牌
+  cache:
+    similarity-threshold: 0.95   # 命中阈值(spec §8)
+    recent-max: 200              # 候选集上限(算余弦的条目数)

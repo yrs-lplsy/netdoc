@@ -2,6 +2,7 @@ package com.kbrag.chat;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kbrag.cache.ChatCacheService;
 import com.kbrag.chat.ConversationRepository;
 import com.kbrag.chat.MessageRepository;
 
@@ -39,6 +40,12 @@ public class AgentChatService {
     }
 
     public void stream(String question, Long conversationId, SseEmitter emitter) {
+        Optional<ChatCacheService.CacheHit> hit = chatCache.lookup(question);
+        if (hit.isPresent()) {                 // 命中:直返缓存,不调 Python(省 Token/降延迟)
+            emitCacheAnswer(hit.get(), emitter);
+            // 命中计数由 Task 9 接入(ObservabilityService.saveSpan(..., cacheHit=true)),本任务不依赖 Task 9
+            return;
+        }
         List<Map<String, String>> history = conversationId == null ? List.of()
                 : messages.findByConversationIdOrderByIdAsc(conversationId).stream()
                         .map(m -> Map.of("role", m.getRole(), "content", m.getContent()))
@@ -121,5 +128,15 @@ public class AgentChatService {
         messages.save(m1);
         messages.save(m2);
         return conversationId;
+    }
+
+    private void emitCacheAnswer(ChatCacheService.CacheHit hit, SseEmitter emitter) {
+        try {
+            emitter.send(SseEmitter.event().name("cache_hit").data("{\"seq\":1,\"data\":true}"));
+            emitter.send(SseEmitter.event().name("answer").data("{\"seq\":2,\"data\":" + om.writeValueAsString(hit.answer()) + "}"));
+            emitter.send(SseEmitter.event().name("source").data("{\"seq\":3,\"data\":" + hit.sourcesJson() + "}"));
+            emitter.send(SseEmitter.event().name("done").data("{\"seq\":4,\"data\":null}"));
+            emitter.complete();
+        } catch (Exception e) { emitter.completeWithError(e); }
     }
 }

@@ -1836,7 +1836,7 @@ git add -A && git commit -m "feat: end-to-end SSE proxy from java gateway to pyt
 **Files:**
 - Create: `backend/src/main/java/com/kbrag/cache/CosineSimilarity.java`(纯算法,可单测)
 - Test: `backend/src/test/java/com/kbrag/cache/CosineSimilarityTest.java`
-- Create: `backend/src/main/java/com/kbrag/cache/ChatCacheService.java`(含静态纯方法 selectBest,可单测)
+- Create: `backend/src/main/java/com/kbrag/cache/ChatCacheService.java`(Redis 存储层;selectBest 在 CosineSimilarity 算法类,见 Step 3)
 - Modify: `backend/src/main/resources/application.yml`(app.cache)
 - Modify: `backend/src/main/java/com/kbrag/chat/AgentChatService.java`(lookup 命中直返 / 未命中完成后 put)
 
@@ -1877,12 +1877,12 @@ class CosineSimilarityTest {
         Map<String, float[]> candidates = Map.of(
                 "a", new float[]{1f, 0f},
                 "b", new float[]{0.5f, 0.866f});  // 与 query 夹角 60°,相似度 0.5
-        assertEquals("a", ChatCacheService.selectBest(candidates, new float[]{1f, 0f}, 0.95));
+        assertEquals("a", CosineSimilarity.selectBest(candidates, new float[]{1f, 0f}, 0.95));
     }
 
     @Test
     void none_above_threshold_returns_null() {
-        assertNull(ChatCacheService.selectBest(Map.of("a", new float[]{0f, 1f}), new float[]{1f, 0f}, 0.95));
+        assertNull(CosineSimilarity.selectBest(Map.of("a", new float[]{0f, 1f}), new float[]{1f, 0f}, 0.95));
     }
 }
 ```
@@ -1893,7 +1893,7 @@ class CosineSimilarityTest {
 cd backend && mvn test -Dtest=CosineSimilarityTest
 ```
 
-- [ ] **Step 3: 实现 CosineSimilarity 与 selectBest**
+- [ ] **Step 3: 实现 CosineSimilarity(cosine + selectBest 同属算法类,职责内聚)**
 
 ```java
 package com.kbrag.cache;
