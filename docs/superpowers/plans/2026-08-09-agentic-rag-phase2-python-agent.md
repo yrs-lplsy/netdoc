@@ -579,7 +579,9 @@ from app.config import JAVA_BASE_URL, TOOL_TIMEOUT_SECONDS
 
 class JavaClient:
     """反向调用 Java 工具端点;记录已执行调用,重复调用检测。
-    conversation_id 非空时,每次调用携带递增 agentStepId → Java 侧幂等键(spec §9 双层防线)。"""
+    conversation_id 非空时,每次调用携带递增 agentStepId → Java 侧幂等键(spec §9 双层防线)。
+    约束:一个实例只服务一个会话(单线程图执行),_seen/_step 是会话级状态;
+    重试轮次间必须复用同一实例,否则 agentStepId 重置会命中 Java 侧幂等缓存、返回降级摘要。"""
 
     def __init__(self, base_url: str = JAVA_BASE_URL, timeout: float = TOOL_TIMEOUT_SECONDS,
                  conversation_id: int | None = None):
@@ -676,7 +678,7 @@ def execute_tool(name: str, args: dict, client: JavaClient | None = None) -> str
         lines = []
         for i, hit in enumerate(raw, 1):
             lines.append(
-                f"[{i}] 片段ID={hit.get('chunkId')} 文档ID={hit.get('docId')} 标题={hit.get('headingPath')}\n{hit.get('content', '')[:500]}"
+                f"[{i}] 片段ID={hit.get('chunkId')} 文档ID={hit.get('docId')} 标题={hit.get('headingPath') or ''}\n{(hit.get('content') or '')[:500]}"
             )
         return "\n\n".join(lines)
     return str(raw)
@@ -1263,6 +1265,8 @@ TOOLS_SYSTEM = (
     "需要溯源时调用 get_doc_detail;用户问知识库规模时调用 get_stats。"
 )
 
+_clients: dict = {}   # conversation_id → JavaClient(进程内会话级缓存;单进程 uvicorn 适用)
+
 
 async def tools_node(state: AgentState, chat=None, client=None) -> AgentState:
     """阶段1:LLM function calling 决定工具调用;阶段2:循环执行(去重/超时/错误自然语言化)。"""
@@ -1271,7 +1275,12 @@ async def tools_node(state: AgentState, chat=None, client=None) -> AgentState:
     from app.tools import TOOL_SCHEMAS, execute_tool
 
     chat = chat or chat_model
-    client = client or JavaClient(conversation_id=state.get("conversation_id"))
+    # 会话级 client 缓存:verify→rewrite→tools 重试轮次间必须复用同一实例,_seen/_step 才能延续;
+    # 否则 _step 重置,Java 侧幂等缓存命中旧 step,返回降级摘要(无 content,检索丢失)
+    conversation_id = state.get("conversation_id")
+    if client is None:
+        client = _clients.get(conversation_id) or JavaClient(conversation_id=conversation_id)
+        _clients[conversation_id] = client
     contexts = list(state.get("contexts") or [])
 
     # 阶段 1:LLM 携带工具 schema 决定调用哪些工具(DeepSeek Function Calling)
@@ -1298,24 +1307,29 @@ async def tools_node(state: AgentState, chat=None, client=None) -> AgentState:
 
 
 def _parse_hits(text: str) -> list:
-    """从 execute_tool 的自然语言输出反解出结构化片段(单测覆盖)。"""
+    """从 execute_tool 的输出解析片段:逐行扫描、锚定 meta 行。
+    content 内若含 "[N] " 交叉引用不会被误切分(round-trip 安全)。"""
     import re
 
-    hits = []
-    for block in re.split(r"\[\d+\] ", text):
-        if not block.strip():
-            continue
-        lines = block.splitlines()
-        meta = lines[0] if lines else ""
-        content = "\n".join(lines[1:]) if len(lines) > 1 else ""
-        chunk_id = int(re.search(r"片段ID=(\d+)", meta).group(1))
-        doc_id = int(re.search(r"文档ID=(\d+)", meta).group(1))
-        title = re.search(r"标题=(.*)", meta).group(1)
-        hits.append({"chunkId": chunk_id, "docId": doc_id, "headingPath": title, "content": content})
+    meta_re = re.compile(r"^\[\d+\] 片段ID=(\d+) 文档ID=(\d+) 标题=(.*)$")
+    hits, current = [], None
+    for line in text.splitlines():
+        m = meta_re.match(line)
+        if m:
+            if current is not None:
+                hits.append(current)
+            current = {"chunkId": int(m.group(1)), "docId": int(m.group(2)),
+                       "headingPath": m.group(3), "content": ""}
+        elif current is not None:
+            current["content"] += line + "\n"
+    if current is not None:
+        hits.append(current)
+    for h in hits:
+        h["content"] = h["content"].rstrip("\n")
     return hits
 ```
 
-> execute_tool 的输出格式(见 Task 4 Step 2)与 _parse_hits 的正则一一对应,改格式必须同步改解析。
+> 格式契约(execute_tool ↔ _parse_hits,改格式必须同步改解析):每个片段 = 一行 meta(`[N] 片段ID=.. 文档ID=.. 标题=..`)+ 后续若干行 content;解析器逐行扫描锚定 meta 行,content 内的 `[N]` 交叉引用不误切。
 > DeepSeek 的 tool_calls 结构与 OpenAI 一致:`[{"name": ..., "args": {...}}]`(langchain 解析后)。
 
 - [ ] **Step 7: 实现 verify 节点(PASS/FAIL 判断 + attempts 递增 + FAIL 理由回喂)**
@@ -2223,6 +2237,18 @@ git add -A && git commit -m "feat: per-turn rag spans and stats endpoint"
 **验收**:每轮 rag_span 落库(各阶段耗时可查);/api/stats 返回四项指标;命中轮 cache_hit=true。
 
 ---
+
+## 修订记录(2026-08-10 评审后回写)
+
+| # | 问题 | 修订位置 |
+|---|---|---|
+| P5-1 | langchain-openai 1.x 的 OpenAIEmbeddings 是 pydantic v2 模型,`__delattr__` 拦截实例属性删除,`patch("...aembed_documents")` 退出 with 时抛 AttributeError | Task 3 Step 2:mock 目标改为模块级对象 `patch("app.llm.embeddings_model", fake)` |
+| P5-2 | pytest 9.x 默认 importlib 导入模式,不再自动把项目根加入 sys.path,`uv run pytest` 报 `ModuleNotFoundError: No module named 'app'` | Task 1:pyproject.toml 加 `[tool.pytest.ini_options] pythonpath=["."] testpaths=["tests"]` |
+| P5-3 | plan 测试代码幂等 key 工具名笔误("search_kb" vs 端点名 "search"),去重穿透导致测试真发 HTTP 到 fake 地址报 502 | Task 4 Step 3:测试 key 用端点名 + 与实现同源的 `json.dumps(sort_keys=True, ensure_ascii=False)` 构造 |
+| P5-4 | `execute_tool` 对 null content 崩溃(`None[:500]` TypeError),且格式化循环在 try/except 外,错误逃逸自然化会炸下游 tools_node | Task 4 Step 2:`(hit.get('content') or '')[:500]`、`hit.get('headingPath') or ''` |
+| P5-5 | 命中文本格式不能 round-trip:content 含 "[N] " 交叉引用会打碎 `re.split(r"\[\d+\] ")` 解析 | Task 6 Step 6:`_parse_hits` 改逐行扫描、锚定完整 meta 行;格式契约单点注释 |
+| P5-6 | JavaClient "每会话一个实例"假设未固化:tools_node 每次 new → 重试轮 `_seen`/`_step` 重置 → Java 幂等缓存命中旧 step 返回降级摘要(检索丢失) | Task 6 Step 6:会话级 client 缓存(进程内 dict keyed by conversation_id,单进程 uvicorn 适用);Task 4 Step 1 docstring 记录约束 |
+| P5-7 | `ddl-auto=update` 与 PG 生成列冲突:数据卷重建后 Hibernate 迁移发 `alter segmented_text set data type text`,PG 拒绝(cannot alter type of a column used by a generated column)→ 启动失败 | 已由实施者修复(commit 056e397):`ddl-auto=none` + schema.sql 全量建表(含 tool_call_log 幂等键字段);面试讲"DDL 全托管" |
 
 ## Self-Review 记录
 
