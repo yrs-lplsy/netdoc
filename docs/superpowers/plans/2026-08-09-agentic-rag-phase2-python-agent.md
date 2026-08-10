@@ -409,7 +409,7 @@ public class AgentHealthController {
 }
 ```
 
-> application.yml 的 `app:` 下新增(Java 侧唯一配置点,Task 6 的 AgentChatService 复用,勿再硬编码):
+> application.yml 的 `app:` 下新增(Java 侧唯一配置点,Task 7 的 AgentChatService 复用,勿再硬编码):
 
 ```yaml
   agent:
@@ -926,7 +926,27 @@ public class RateLimiter {
     refill-per-second: 2  # 每秒补充 2 个令牌
 ```
 
+> ⚠️ 前置依赖:本步 ChatController 引用了 `AgentChatService`(Task 7 Step 5 创建)。**Java 侧 Task 5 与 Task 7 必须同批完成**——先建 AgentChatService 再改 ChatController,否则编译不过。完整 import 如下,照抄即可:
+
 ```java
+package com.kbrag.chat;
+
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+
+import com.kbrag.ratelimit.RateLimiter;
+
+import jakarta.servlet.http.HttpServletRequest;
+
 @RestController
 @RequestMapping("/api/chat")
 public class ChatController {
@@ -1759,35 +1779,9 @@ public class AgentChatService {
 }
 ```
 
-- [ ] **Step 6: 改造 ChatController(指向 AgentChatService,保留 ChatService 为降级)**
+- [ ] **Step 6: ChatController 确认(已含限流)**
 
-```java
-package com.kbrag.chat;
-
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.http.MediaType;
-import org.springframework.web.bind.annotation.*;
-import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
-
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-
-@RestController
-@RequestMapping("/api/chat")
-public class ChatController {
-    @Autowired private AgentChatService agentChatService;
-    private final ExecutorService executor = Executors.newFixedThreadPool(8);
-
-    public record ChatRequest(String message, Long conversationId) {}
-
-    @PostMapping(produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter chat(@RequestBody ChatRequest req) {
-        SseEmitter emitter = new SseEmitter(180_000L);
-        executor.execute(() -> agentChatService.stream(req.message(), req.conversationId(), emitter));
-        return emitter;
-    }
-}
-```
+> ⚠️ 不重复创建:**ChatController 已在 Task 5 Step 6 完成**(含限流 + AgentChatService 透传 + 429 处理),本任务**无需改动**。若按序执行到本步时尚未写 Task 5,按 Task 5 Step 6 的版本创建(带 RateLimiter 的完整版)。本步只验证:`/api/chat` 能透传 Python SSE(端到端见 Step 8)。
 
 > `ChatService`(Phase 1 直连 LLM)保留不删——降级预案(spec §3.1)后续按开关切换。
 
@@ -2027,12 +2021,10 @@ AgentChatService.stream 开头加缓存分支,完成时 put:
 
 ```java
 public void stream(String question, Long conversationId, SseEmitter emitter) {
-    long t0 = System.currentTimeMillis();
     Optional<ChatCacheService.CacheHit> hit = chatCache.lookup(question);
     if (hit.isPresent()) {                 // 命中:直返缓存,不调 Python(省 Token/降延迟)
         emitCacheAnswer(hit.get(), emitter);
-        observabilityService.saveSpan(conversationId, question, System.currentTimeMillis() - t0,
-                Map.of(), true);
+        // 命中计数由 Task 9 接入(ObservabilityService.saveSpan(..., cacheHit=true)),本任务不依赖 Task 9
         return;
     }
     // ...原有透传流程
@@ -2050,7 +2042,7 @@ private void emitCacheAnswer(ChatCacheService.CacheHit hit, SseEmitter emitter) 
 ```
 
 > 透传分支的 `source` 事件到达时暂存 `sourcesJson` 字符串,`done` 时 `chatCache.put(question, answer.toString(), sourcesJson)`(缓存完整回答)。
-> 注:Task 9 的 `observabilityService` 在此处被引用——若先做本任务,可先注入并仅保存 cacheHit 字段,Task 9 补全字段(两任务同批提交更顺)。
+> 依赖边界:本任务只依赖 Task 5 的 ChatController/AgentChatService 与 Phase 1 的 EmbeddingService,**不依赖 Task 9**(ObservabilityService 在 Task 9 Step 3 才注入 AgentChatService,届时把 cacheHit 计数一并接上)。
 
 - [ ] **Step 7: 验证**
 
@@ -2249,6 +2241,8 @@ git add -A && git commit -m "feat: per-turn rag spans and stats endpoint"
 | P5-5 | 命中文本格式不能 round-trip:content 含 "[N] " 交叉引用会打碎 `re.split(r"\[\d+\] ")` 解析 | Task 6 Step 6:`_parse_hits` 改逐行扫描、锚定完整 meta 行;格式契约单点注释 |
 | P5-6 | JavaClient "每会话一个实例"假设未固化:tools_node 每次 new → 重试轮 `_seen`/`_step` 重置 → Java 幂等缓存命中旧 step 返回降级摘要(检索丢失) | Task 6 Step 6:会话级 client 缓存(进程内 dict keyed by conversation_id,单进程 uvicorn 适用);Task 4 Step 1 docstring 记录约束 |
 | P5-7 | `ddl-auto=update` 与 PG 生成列冲突:数据卷重建后 Hibernate 迁移发 `alter segmented_text set data type text`,PG 拒绝(cannot alter type of a column used by a generated column)→ 启动失败 | 已由实施者修复(commit 056e397):`ddl-auto=none` + schema.sql 全量建表(含 tool_call_log 幂等键字段);面试讲"DDL 全托管" |
+| P5-8 | Task 5 的 ChatController 代码块引用 **Task 7 才创建的 AgentChatService**,且 `contentType(MediaType.TEXT_EVENT_STREAM_VALUE)` 用了 String 常量(编译不过),照抄必失败 | Task 5 Step 6:补完整 import + 前置依赖标注(Java 侧 Task 5/7 同批完成);contentType 改 `MediaType.TEXT_EVENT_STREAM`;Task 7 Step 6 改为"确认不改"(ChatController 已在 Task 5 完成) |
+| P5-9 | Task 8 Step 6 引用 Task 9 的 ObservabilityService,单独做 Task 8 编译不过 | 去掉 `observabilityService.saveSpan` 调用,标注"命中计数由 Task 9 接入";Task 8 依赖边界:只依赖 Task 5 + Phase 1,不依赖 Task 9 |
 
 ## Self-Review 记录
 
