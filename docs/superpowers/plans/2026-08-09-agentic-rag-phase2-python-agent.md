@@ -2163,10 +2163,27 @@ public class ObservabilityService {
 }
 ```
 
-- [ ] **Step 3: AgentChatService done 时落 span**
+- [ ] **Step 3: AgentChatService done 时落 span(改 3 处,基于 Task 7 已完成的 stream)**
+
+**第 1 处** — 类字段(构造器上方,`private final ObjectMapper om` 之后):
 
 ```java
-// stream 方法:记录 t0,透传分支 done 事件里:
+    @Autowired private ObservabilityService observabilityService;
+```
+
+import 补:`com.kbrag.obs.ObservabilityService`、`org.springframework.beans.factory.annotation.Autowired`(Task 7 的类用构造器注入,无这两个 import)。
+
+**第 2 处** — `stream` 方法第一行(记录整轮开始):
+
+```java
+public void stream(String question, Long conversationId, SseEmitter emitter) {
+    long t0 = System.currentTimeMillis();
+    ...
+```
+
+**第 3 处** — 透传分支的 done 事件里(在既有 `save(...)` 之后):
+
+```java
 if ("done".equals(event)) {
     emitter.complete();
     save(conversationId, question, answer.toString());
