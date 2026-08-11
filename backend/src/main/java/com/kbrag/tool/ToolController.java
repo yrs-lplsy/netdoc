@@ -38,7 +38,7 @@ public class ToolController {
         if (dup.isPresent()) return dup.get();
         long t0 = System.currentTimeMillis();
         try {
-            List<SearchResult> hits = retriever.search(req.query(), req.topK() == 0 ? 5 : req.topK());
+            List<SearchResult> hits = retriever.search(req.query(), req.kbId(), req.topK() == 0 ? 5 : req.topK());
             log("search_kb", req, hits.size() + " hits", t0, true, req);
             return hits;
         } catch (Exception e) {
@@ -124,5 +124,5 @@ public class ToolController {
         catch (Exception e) { return "{}"; }
     }
 
-    public record ToolRequest(String query, Integer topK, Long docId, Long conversationId, Integer agentStepId) {}
+    public record ToolRequest(String query, Integer topK, Long docId, Long conversationId, Integer agentStepId, Long kbId) {}
 }

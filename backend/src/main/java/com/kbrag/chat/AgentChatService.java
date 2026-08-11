@@ -1,5 +1,7 @@
 package com.kbrag.chat;
 
+import java.io.IOException;
+
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kbrag.cache.ChatCacheService;
@@ -13,7 +15,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+
 import reactor.core.publisher.Flux;
+
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.codec.ServerSentEvent;
 
@@ -47,7 +51,7 @@ public class AgentChatService {
         this.chatCache = chatCache;
     }
 
-    public void stream(String question, Long conversationId, SseEmitter emitter) {
+    public void stream(String question, Long kbId, Long conversationId, SseEmitter emitter) {
         long t0 = System.currentTimeMillis();
         // I3:缓存查询故障(Redis/embedding)降级走 Python 主链路,不挂起
         Optional<ChatCacheService.CacheHit> hit = Optional.empty();
@@ -65,7 +69,7 @@ public class AgentChatService {
                 emitter.send(SseEmitter.event().name("source").data("{\"seq\":3,\"data\":" + hit.get().sourcesJson() + "}"));
                 emitter.send(SseEmitter.event().name("conversation").data("{\"seq\":4,\"data\":{\"conversationId\":" + cid + "}}"));
                 emitter.send(SseEmitter.event().name("done").data("{\"seq\":5,\"data\":null}"));
-            } catch (Exception e) {
+            } catch (IOException e) {
                 emitter.completeWithError(e);
                 return;
             }

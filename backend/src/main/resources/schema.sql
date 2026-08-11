@@ -90,7 +90,23 @@ CREATE TABLE IF NOT EXISTS role_permission (
     role_id BIGINT, permission_id BIGINT
 );
 
+-- 新建 knowledge_base 表(库本身,对应第 2 步的 Java 实体):
+CREATE TABLE IF NOT EXISTS knowledge_base (
+    id          BIGSERIAL PRIMARY KEY,
+    name        VARCHAR(255),
+    description TEXT,
+    owner_id    BIGINT,
+    created_at  TIMESTAMP(6)
+);
 
+-- 三张旧表加 kb_id 列(幂等写法,兼容已存在的旧库):
+ALTER TABLE document ADD COLUMN IF NOT EXISTS kb_id BIGINT;
+ALTER TABLE document_chunk ADD COLUMN IF NOT EXISTS kb_id BIGINT;
+ALTER TABLE conversation ADD COLUMN IF NOT EXISTS kb_id BIGINT;
+
+--按库查询的索引(检索按 kb_id 过滤时用):
+CREATE INDEX IF NOT EXISTS idx_doc_kb   ON document (kb_id);
+CREATE INDEX IF NOT EXISTS idx_chunk_kb ON document_chunk (kb_id);
 
 CREATE INDEX IF NOT EXISTS idx_chunk_fts  ON document_chunk USING gin (search_text);
 CREATE INDEX IF NOT EXISTS idx_chunk_hnsw ON document_chunk USING hnsw (embedding vector_cosine_ops);

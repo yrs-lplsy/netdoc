@@ -13,6 +13,7 @@ import java.time.LocalDateTime;
 public class Document {
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
+    private Long kbId;
     private String title;
     private String category;
     private Long uploader;

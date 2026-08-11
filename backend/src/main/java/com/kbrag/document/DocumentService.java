@@ -38,10 +38,11 @@ public class DocumentService {
         this.chunker = new HeadingAwareChunker(MAX_SIZE, MIN_SIZE, OVERLAP);
     }
 
-    public Document upload(MultipartFile file) throws IOException {
+    public Document upload(MultipartFile file, Long kbId) throws IOException {
         Document doc = new Document();
         doc.setTitle(file.getOriginalFilename());
         doc.setUploader(0L);
+        doc.setKbId(kbId);
         documents.save(doc);
         // MultipartFile 背后是 Tomcat 临时文件，请求结束后会被删除；
         // 必须先在请求线程内把内容读成字节数组，再交给异步线程处理

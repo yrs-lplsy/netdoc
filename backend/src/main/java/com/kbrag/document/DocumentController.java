@@ -22,18 +22,21 @@ public class DocumentController {
     @Autowired private DocumentChunkRepository chunks;
 
     @PostMapping
-    public ResponseEntity<?> upload(@RequestParam("file") MultipartFile file) {
+    public ResponseEntity<?> upload(@RequestParam("file") MultipartFile file, @RequestParam("kbId") Long kbId) {
         try {
-            return ResponseEntity.ok(documentService.upload(file));
+            return ResponseEntity.ok(documentService.upload(file, kbId));
         } catch (Exception e) {
             return ResponseEntity.badRequest().body(e.getMessage());
         }
     }
 
     @GetMapping
-    public List<Document> list(@RequestParam(required = false) String status) {
-        return status == null ? documents.findAll() : documents.findAll().stream()
-                .filter(d -> d.getStatus().name().equalsIgnoreCase(status)).toList();
+    public List<Document> list(@RequestParam(required = false) String status,
+                           @RequestParam(required = false) Long kbId) {
+        return documents.findAll().stream()
+                .filter(d -> status == null || d.getStatus().name().equalsIgnoreCase(status))
+                .filter(d -> kbId == null || kbId.equals(d.getKbId()))
+                .toList();
     }
 
     @DeleteMapping("/{id}")

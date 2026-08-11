@@ -13,6 +13,7 @@ public class DocumentChunk {
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
     private Long docId;
+    private Long kbId;
     private Integer chunkIndex;
     @Column(columnDefinition = "text")
     private String content;

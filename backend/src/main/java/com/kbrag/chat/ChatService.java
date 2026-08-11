@@ -36,11 +36,11 @@ public class ChatService {
                 .build();
     }
 
-    public void streamAnswer(String question, Long conversationId, SseEmitter emitter) {
+    public void streamAnswer(String question, Long kbId, Long conversationId, SseEmitter emitter) {
         AtomicInteger seq = new AtomicInteger();
         try {
             // 1. 检索
-            List<SearchResult> hits = retriever.search(question, 5);
+            List<SearchResult> hits = retriever.search(question, kbId, 5);
             if (hits.isEmpty()) {
                 emitter.send(event("answer", seq, "资料库中暂未找到相关信息。"));
                 emitter.send(event("done", seq, null));

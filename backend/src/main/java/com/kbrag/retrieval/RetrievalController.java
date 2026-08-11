@@ -11,8 +11,8 @@ public class RetrievalController {
     @Autowired HybridRetriever retriever;
 
     @PostMapping
-    public List<SearchResult> retrieve(@RequestBody RetrieveRequest req) {
-        return retriever.search(req.query(), req.topK() == 0 ? 5 : req.topK());
+    public List<SearchResult> retrieve(@RequestBody RetrieveRequest req, @RequestParam Long kbId) {
+        return retriever.search(req.query(), kbId, req.topK() == 0 ? 5 : req.topK());
     }
 
     public record RetrieveRequest(String query, int topK) {}
