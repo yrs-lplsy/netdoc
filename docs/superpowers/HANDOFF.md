@@ -50,16 +50,17 @@ GitHub: https://github.com/yrs-lplsy/netdoc(公开)
   ④底层原理(面试可讲的人话版本)
 - 用户说"我自己来改"时只讲解、不改文件;不替用户写业务代码
 
-# 3. 现状快照(2026-08-10)
+# 3. 现状快照(2026-08-10 晚)
 
-- 已完成:Phase 1 全部(文档管线/混合检索/SSE);Plan A 已开工——Task 1
-  (Python 骨架)进行中:requirements.txt + venv(Py3.13)已就绪,.gitignore 已补;
-  config.py/main.py/test_health.py 待写待验收
-- 设计定稿:企业级 RAG 中台(spec 2026-08-10);Plan A/B/C 三份计划已提交,
-  按周推进(8/16 Agent 演示 → 8/23 认证+KG 演示 → 8/30 指标 → 9/6 上线投递)
-- 已对齐:docs 同步、README(NetDoc 叙事)、Lombok 统一 @Data、端口 9100、
-  工具幂等键(Plan A Task 2 已含)、豆包 4 条优化(三路 RRF/缓存一致性/幂等/K8s 路径)落 spec
-- 待办:Task 1 收尾 → Plan A Task 2-9 → Plan B → Plan C;简历正式批(9/6 前)
+- **Plan A 全部完成(8/16 里程碑达成)**:Python Agent(骨架/LLM/工具层/五节点图 TDD/SSE 透传)
+  + Java 工具端点(幂等)/令牌桶限流(Redis Lua,fail-open)/语义缓存/可观测(rag_span+stats)
+- **端到端验证通过**:缓存命中秒回、重试轮 regenerate 重绘、rag_span 各阶段耗时、
+  stats 出命中率、限流并发 429;代码审查(子代理)发现的问题全部修复
+- **环境要点**:langgraph 实际为 1.2.10(plan 按 0.2 写)——4 处适配已落地并验证
+  (streaming 事件按节点过滤、条件边 str output 过滤、start_ns setdefault、recursion_limit 16)
+- **已知外部依赖**:DeepSeek 高峰期单节点 7-8s(一轮 ~40s),request_timeout=60 兜底;演示选空闲时段
+- **待办**:Plan B(8/23 里程碑:RBAC 认证 + 多知识库 + KG + 缓存一致性)→ Plan C
+- 简历正式批:9/6 前(Plan C 收尾时)
 
 # 4. 环境要点(WSL2,勿乱改)
 
