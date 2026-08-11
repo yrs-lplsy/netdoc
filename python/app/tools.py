@@ -54,6 +54,18 @@ def execute_tool(name: str, args: dict, client: JavaClient | None = None) -> str
         if isinstance(raw, dict) and raw.get("idempotent"):
             # Java 幂等命中:复用上次结果摘要,不重复执行(双层幂等防线)
             return f"(幂等命中,复用上次结果) {raw.get('output', '')}"
+        if isinstance(raw, dict) and "hits" in raw:
+            # 新契约:{"hits": [...], "graphContext": "..."};图谱上下文段随检索结果回喂 LLM
+            ctx = raw.get("graphContext") or ""
+            hits = raw.get("hits") or []
+            parts = [f"图谱关系:\n{ctx}"] if ctx else []
+            if not hits:
+                parts.append("知识库中未检索到相关内容。")
+            for i, hit in enumerate(hits, 1):
+                content = (hit.get("content") or "")[:500]      # content 可能为 null,防御(P5-4)
+                heading = hit.get("headingPath") or ""
+                parts.append(f"[{i}] 片段ID={hit.get('chunkId')} 文档ID={hit.get('docId')} 标题={heading}\n{content}")
+            return "\n\n".join(parts)
         if isinstance(raw, list):
             if not raw:
                 return "知识库中未检索到相关内容。"

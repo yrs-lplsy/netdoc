@@ -41,7 +41,8 @@ async def tools_node(state: AgentState, chat=None, client=None) -> AgentState:
         name, args = call["name"], call["args"]
         text = execute_tool(name, args, client)
         if name == "search_kb" and not text.startswith("[工具"):
-            contexts.extend(_parse_hits(text))  # 把检索结果文本解析回结构化
+            _extract_graph_context(text, state)   # 图谱关系段 → state["graph_context"]
+            contexts.extend(_parse_hits(text))    # _parse_hits 只解析 [N] 块,图谱段单独走 state
 
     state["contexts"] = contexts
     state["tool_calls"] = list(state.get("tool_calls") or []) + requested  # 累积记录(供审计/去重)

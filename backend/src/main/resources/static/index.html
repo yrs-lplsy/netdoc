@@ -9,17 +9,89 @@
 <input id="q" style="width:70%;padding:8px" placeholder="例如：安装步骤是什么？"/>
 <button onclick="ask()">提问</button>
 <div id="out"></div>
+<!-- index.html 追加:登录区 + 图谱按钮 -->
+<div style="margin:12px 0">
+  <input id="u" placeholder="用户名" value="admin"/><input id="p" type="password" placeholder="密码" value="admin123"/>
+  <button onclick="login()">登录</button>
+  <button onclick="loadGraph()">图谱</button>
+  <canvas id="kg" width="720" height="360" style="border:1px solid #ccc;display:none"></canvas>
+</div>
+<script>
+let TOKEN = '';
+async function login() {
+  const r = await fetch('/api/auth/login', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({username:u.value, password:p.value})});
+  if (!r.ok) { alert('登录失败: ' + (await r.json()).error); TOKEN = ''; return; }
+  TOKEN = (await r.json()).token;
+  alert('登录成功');
+}
+
+function drawGraph(g) {
+  const canvas = document.getElementById('kg');
+  canvas.style.display = 'block';
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const nodes = g.nodes.map(n => ({...n, x: Math.random() * W, y: Math.random() * H}));
+  const byId = new Map(nodes.map(n => [n.id, n]));
+  const edges = g.edges.map(e => ({a: byId.get(e.source), b: byId.get(e.target)}))
+                        .filter(e => e.a && e.b);   // 防孤儿边
+  // 力导向迭代:斥力(所有节点对)+ 弹簧力(边)→ 200 次收敛
+  for (let i = 0; i < 200; i++) {
+    for (const n of nodes) { n.vx = 0; n.vy = 0; }
+    for (let a = 0; a < nodes.length; a++)
+      for (let b = a + 1; b < nodes.length; b++) {
+        const dx = nodes[b].x - nodes[a].x, dy = nodes[b].y - nodes[a].y;
+        const d2 = Math.max(dx*dx + dy*dy, 1), d = Math.sqrt(d2);
+        const f = 8000 / d2;                       // 库仑斥力:与距离平方成反比
+        nodes[a].vx -= f * dx / d; nodes[a].vy -= f * dy / d;
+        nodes[b].vx += f * dx / d; nodes[b].vy += f * dy / d;
+      }
+    for (const e of edges) {
+      const dx = e.b.x - e.a.x, dy = e.b.y - e.a.y;
+      const d = Math.max(Math.sqrt(dx*dx + dy*dy), 1);
+      const f = (d - 120) * 0.02;                  // 弹簧力:拉向目标长度 120
+      e.a.vx += f * dx / d; e.a.vy += f * dy / d;
+      e.b.vx -= f * dx / d; e.b.vy -= f * dy / d;
+    }
+    for (const n of nodes) {
+      n.x += n.vx; n.y += n.vy;
+      n.x = Math.max(20, Math.min(W - 20, n.x));   // 边界约束
+      n.y = Math.max(20, Math.min(H - 20, n.y));
+    }
+  }
+  ctx.clearRect(0, 0, W, H);
+  for (const e of edges) {
+    ctx.beginPath(); ctx.moveTo(e.a.x, e.a.y); ctx.lineTo(e.b.x, e.b.y);
+    ctx.strokeStyle = '#999'; ctx.stroke();
+  }
+  for (const n of nodes) {
+    ctx.beginPath(); ctx.arc(n.x, n.y, 12, 0, Math.PI * 2);
+    ctx.fillStyle = '#4a90d9'; ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font = '10px sans-serif';
+    ctx.textAlign = 'center'; ctx.fillText(n.name.slice(0, 8), n.x, n.y + 3);
+  }
+}
+// 所有 fetch 加 headers:{'Authorization':'Bearer '+TOKEN}
+async function loadGraph() {
+  const r = await fetch('/api/kg/graph?kbId=2', {headers:{'Authorization':'Bearer '+TOKEN}});
+  const g = await r.json();
+  drawGraph(g);   // 简易力导向:节点随机散布→按边迭代收敛→连线;70 行内实现
+}
+</script>
+
+
 <script>
 let CONVERSATION_ID = null;   // 多轮会话:done 后由 conversation 事件回传
 async function ask() {
   const q = document.getElementById('q').value;
   const out = document.getElementById('out');
   out.innerHTML = '<pre></pre><div id="src"></div>';
-  const resp = await fetch('/api/chat', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({message: q, conversationId: CONVERSATION_ID})
-  });
+//chat 请求拼 kbId(query 参数,与后端契约一致)
+const resp = await fetch('/api/chat?kbId=2', {
+  method: 'POST',
+  headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + TOKEN},
+  body: JSON.stringify({message: msg.value})
+});
   if (!resp.ok) {
     out.textContent = resp.status === 429 ? '请求过于频繁,请稍后再试' : '请求失败(' + resp.status + '): ' + await resp.text();
     return;

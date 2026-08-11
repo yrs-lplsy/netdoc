@@ -32,4 +32,14 @@ public class RrfFusionTest {
         assertEquals(fused.size(), fused.stream().distinct().count());
 
     }
+    
+    @Test
+    void three_way_fusion_prefers_agreement() {
+        // 图谱路与向量路一致:[1,2];关键词路:[1,3] → 1 三路命中排第一
+        List<Long> fused = RrfFusion.fuse(
+                List.of(List.of(1L, 2L, 3L), List.of(1L, 2L, 4L), List.of(1L, 3L, 5L)), 60, 3);
+        assertEquals(1L, fused.get(0));
+        assertTrue(fused.contains(2L));
+        assertEquals(3, fused.size());
+    }
 }

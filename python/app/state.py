@@ -15,3 +15,4 @@ class AgentState(TypedDict, total=False):
     error: Optional[str]       # 错误信息(自然语言化)
     tool_calls: list           # 本次会话已执行调用记录(重复检测依据)
     kb_id: Optional[int]       # 多库隔离上下文,工具调用携带
+    graph_context: Optional[str]   # 图谱关系上下文段(tools_node 提取,generate 拼进 Prompt)

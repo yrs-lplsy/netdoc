@@ -23,6 +23,9 @@ async def generate_node(state: AgentState, chat=None) -> AgentState:
         prompt_parts.append("资料:\n")
         for i, c in enumerate(contexts):
             prompt_parts.append(f"[{i + 1}] {c.get('headingPath', '')}: {c.get('content', '')}")
+    gc = state.get("graph_context")              # 图谱关系上下文段(实体链接命中时非空)
+    if gc:
+        prompt_parts.append(f"\n图谱关系:\n{gc}")
     if state.get("needs_retrieval", True):
         prompt_parts.append("\n要求:回答中标注引用编号;资料中没有的内容直接说明;用中文回答。")
     else:

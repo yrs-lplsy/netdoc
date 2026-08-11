@@ -4,6 +4,9 @@ from pydantic import BaseModel
 
 from app.llm import chat_model
 
+from app.state import AgentState
+
+
 router = APIRouter()
 
 
@@ -103,3 +106,10 @@ async def extract(req: ExtractRequest):
                 if r.get("confidence", 0) >= 0.7:
                     relations.append(r)
     return ExtractResponse(entities=entities, relations=relations)
+
+def _extract_graph_context(text: str, state: AgentState) -> None:
+    """从 execute_tool 输出提取"图谱关系:\n..."段(首个 [N] 块之前),供 generate 拼进 Prompt。"""
+    if not text.startswith("图谱关系:"):
+        return
+    head = text.split("\n\n[", 1)[0]             # 首个 [N] 片段块之前的部分
+    state["graph_context"] = head[len("图谱关系:\n"):]

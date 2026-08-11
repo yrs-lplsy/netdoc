@@ -31,8 +31,10 @@ app:
   retrieval:
     dense-top-k: 30
     sparse-top-k: 30
+    kg-top-k: 20          # 图谱路召回数
     rrf-k: 60
     final-top-k: 5
+    kg-context-enabled: true   # 图谱上下文段开关
   agent:
     base-url: http://localhost:9100   # Python Agent 服务地址
   rate-limit:
