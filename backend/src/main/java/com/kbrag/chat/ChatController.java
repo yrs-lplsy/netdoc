@@ -30,7 +30,7 @@ public class ChatController {
     public ResponseEntity<SseEmitter> chat(@RequestBody ChatRequest req, HttpServletRequest http) {
         String userId = clientIp(http);   // 无登录态,用 IP 作为用户标识(登录后换 userId,维度不变)
         if (!rateLimiter.tryAcquire(userId)) {
-            return ResponseEntity.status(429).build();
+            return ResponseEntity.status(429).build();   // 无 body(类型安全);文案由前端按状态码显示
         }
         SseEmitter emitter = new SseEmitter(180_000L);
         executor.execute(() -> agentChatService.stream(req.message(), req.conversationId(), emitter));

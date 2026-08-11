@@ -9,12 +9,19 @@ TOOLS_SYSTEM = (
 # 两阶段:LLM function calling 决定 → 执行,带重复检测与错误自然语言化
 async def tools_node(state: AgentState, chat=None, client=None) -> AgentState:
     """阶段1:LLM function calling 决定工具调用;阶段2:循环执行(去重/超时/错误自然语言化)。"""
-    from app.java_client import JavaClient
     from app.llm import chat_model
     from app.tools import TOOL_SCHEMAS, execute_tool
 
     chat = chat or chat_model
-    client = client or JavaClient(conversation_id=state.get("conversation_id"))
+    # JavaClient 在一次 run_agent 生命周期内复用(存入 state):重试轮 step 持续递增,
+    # 幂等键(conversation_id + agentStepId)不冲突——否则重试轮 step 归零撞幂等键(C1)
+    if client is None:
+        client = state.get("_java_client")
+        if client is None:
+            from app.java_client import JavaClient
+
+            client = JavaClient(conversation_id=state.get("conversation_id"))
+            state["_java_client"] = client
     contexts = list(state.get("contexts") or [])
 
     # 阶段 1:LLM 携带工具 schema 决定调用哪些工具(DeepSeek Function Calling)
@@ -50,9 +57,13 @@ def _parse_hits(text: str) -> list:
             continue
         lines = block.splitlines()
         meta = lines[0] if lines else ""
+        # 防御:首行不是 meta(幂等摘要/异常文本/非标准块),跳过该块,不崩溃
+        m_id = re.search(r"片段ID=(\d+)", meta)
+        m_doc = re.search(r"文档ID=(\d+)", meta)
+        m_title = re.search(r"标题=(.*)", meta)
+        if not (m_id and m_doc and m_title):
+            continue
         content = "\n".join(lines[1:]) if len(lines) > 1 else ""
-        chunk_id = int(re.search(r"片段ID=(\d+)", meta).group(1))
-        doc_id = int(re.search(r"文档ID=(\d+)", meta).group(1))
-        title = re.search(r"标题=(.*)", meta).group(1)
-        hits.append({"chunkId": chunk_id, "docId": doc_id, "headingPath": title, "content": content})
+        hits.append({"chunkId": int(m_id.group(1)), "docId": int(m_doc.group(1)),
+                     "headingPath": m_title.group(1), "content": content})
     return hits

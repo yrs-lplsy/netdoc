@@ -53,7 +53,8 @@ async def run_agent(input_state: dict):
             if token:
                 yield ("answer", token)
         elif kind == "on_chain_start" and node in NODE_NAMES:
-            start_ns[node] = time.monotonic_ns()
+            # langgraph 1.x 可能对同一节点发多次同名 start(节点包装层),只记首次,否则 elapsed 被覆盖成 0
+            start_ns.setdefault(node, time.monotonic_ns())
         elif kind == "on_chain_end" and node in NODE_NAMES:
             output = event["data"].get("output") or {}
             # langgraph 1.x:条件边 path 函数(route_decision/verify_decision)的 END 事件

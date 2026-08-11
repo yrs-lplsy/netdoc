@@ -42,13 +42,20 @@ public class RateLimiter {
             return 1
             """, Long.class);
 
-    /** userId 粒度限流;false = 超限。 */
+    /** userId 粒度限流;false = 超限。Redis 故障时 fail-open(不阻断服务),生产应加告警。 */
     public boolean tryAcquire(String userId) {
-        Long r = redis.execute(SCRIPT,
-            List.of("rate:" + userId),
-            String.valueOf(System.currentTimeMillis()),   // ARGV[1] now
-            String.valueOf(capacity),                     // ARGV[2] cap
-            String.valueOf(refillPerSecond));             // ARGV[3] refill
-        return r != null && r == 1L;
+        try {
+            Long r = redis.execute(SCRIPT,
+                List.of("rate:" + userId),
+                String.valueOf(System.currentTimeMillis()),   // ARGV[1] now
+                String.valueOf(capacity),                     // ARGV[2] cap
+                String.valueOf(refillPerSecond));             // ARGV[3] refill
+            return r != null && r == 1L;
+        } catch (Exception e) {
+            // fail-open:限流是保护性组件,故障时降级为不限流(服务可用优先),代价是短暂无防护
+            // 面试口径:限流组件故障 → 服务降级 + 告警,而不是把整个对话打挂
+            System.err.println("[ratelimit] redis unavailable, fail-open: " + e.getMessage());
+            return true;
+        }
     }
 }

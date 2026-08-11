@@ -5,9 +5,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kbrag.cache.ChatCacheService;
 import com.kbrag.chat.ConversationRepository;
 import com.kbrag.chat.MessageRepository;
+import com.kbrag.obs.ObservabilityService;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import reactor.core.publisher.Flux;
@@ -31,6 +34,7 @@ public class AgentChatService {
     private final ConversationRepository conversations;
     private final ChatCacheService chatCache;
     private final ObjectMapper om = new ObjectMapper();
+    @Autowired private ObservabilityService observabilityService;
 
     public AgentChatService(WebClient.Builder builder,
                             MessageRepository messages,
@@ -44,10 +48,30 @@ public class AgentChatService {
     }
 
     public void stream(String question, Long conversationId, SseEmitter emitter) {
-        Optional<ChatCacheService.CacheHit> hit = chatCache.lookup(question);
-        if (hit.isPresent()) {                 // 命中:直返缓存,不调 Python(省 Token/降延迟) cache_hit + 整段 answer + source + done(非流式,秒回)
-            emitCacheAnswer(hit.get(), emitter);
-            // 命中计数由 Task 9 接入(ObservabilityService.saveSpan(..., cacheHit=true)),本任务不依赖 Task 9
+        long t0 = System.currentTimeMillis();
+        // I3:缓存查询故障(Redis/embedding)降级走 Python 主链路,不挂起
+        Optional<ChatCacheService.CacheHit> hit = Optional.empty();
+        try {
+            hit = chatCache.lookup(question);
+        } catch (Exception e) {
+            System.err.println("[cache] lookup failed, degrade to agent: " + e.getMessage());
+        }
+        if (hit.isPresent()) {
+            // I2:命中轮也要落库 + 建会话 + 回传 conversation id(多轮历史不断链)
+            Long cid = save(conversationId, question, hit.get().answer());
+            try {
+                emitter.send(SseEmitter.event().name("cache_hit").data("{\"seq\":1,\"data\":true}"));
+                emitter.send(SseEmitter.event().name("answer").data("{\"seq\":2,\"data\":" + om.writeValueAsString(hit.get().answer()) + "}"));
+                emitter.send(SseEmitter.event().name("source").data("{\"seq\":3,\"data\":" + hit.get().sourcesJson() + "}"));
+                emitter.send(SseEmitter.event().name("conversation").data("{\"seq\":4,\"data\":{\"conversationId\":" + cid + "}}"));
+                emitter.send(SseEmitter.event().name("done").data("{\"seq\":5,\"data\":null}"));
+            } catch (Exception e) {
+                emitter.completeWithError(e);
+                return;
+            }
+            emitter.complete();
+            // 命中轮也落 span(cacheHit=true):缓存命中率统计的数据源
+            observabilityService.saveSpan(cid, question, System.currentTimeMillis() - t0, Map.of(), true);
             return;
         }
         List<Map<String, String>> history = conversationId == null ? List.of()
@@ -71,36 +95,60 @@ public class AgentChatService {
 
         StringBuilder answer = new StringBuilder();
         Map<String, Integer> phaseMs = new HashMap<>();   // 各阶段耗时(供 Task 9 可观测落库)
+        String[] sourcesJson = {null};                    // source 事件暂存(lambda 内可变,缓存写入用)
+        boolean[] errored = {false};                      // 本轮是否出错(错误轮跳过落库/写缓存)
         stream.subscribe(
                 sse -> {
                     try {
                         String event = sse.event();
                         String data = sse.data();
                         if (data == null) return;   // 心跳/注释帧(sse-starlette 默认 15s ping),透传层过滤,不转发
-                        if ("answer".equals(event)) {
+                        if ("error".equals(event)) {
+                            errored[0] = true;      // I4:错误轮不再落库/写缓存
+                        } else if ("answer".equals(event)) {
                             // data 形如 {"seq":n,"data":"token"}
                             String token = om.readTree(data).path("data").asText("");
                             answer.append(token);
                         } else if ("phase".equals(event) && data != null) {
                             // data 形如 {"seq":n,"data":{"node":"rewrite","elapsedMs":123}}
                             JsonNode d = om.readTree(data).path("data");
-                            phaseMs.put(d.path("node").asText(), d.path("elapsedMs").asInt(0));
+                            String node = d.path("node").asText();
+                            phaseMs.put(node, d.path("elapsedMs").asInt(0));
+                            // I5:verify 重试 → 第二轮 rewrite 开始:重置累积文本 + 通知前端重绘(避免双段回答)
+                            if ("rewrite".equals(node) && phaseMs.containsKey("verify")) {
+                                answer.setLength(0);
+                                try {
+                                    emitter.send(SseEmitter.event().name("regenerate").data("{\"seq\":9999,\"data\":true}"));
+                                } catch (Exception ignored) { }
+                            }
+                        } else if ("source".equals(event) && data != null) {
+                            // I1:暂存内层 data(引用数组),命中重放时不再二次包装
+                            sourcesJson[0] = om.readTree(data).path("data").toString();
                         } else if ("done".equals(event) && data != null) {
                             // data 形如 {"seq":n,"data":{...}}
                             boolean verified = om.readTree(data).path("data").path("verified").asBoolean(false);
                             String error = om.readTree(data).path("data").path("error").asText("");
                             if (error != null && !error.isEmpty()) {
+                                errored[0] = true;
                                 emitter.send(SseEmitter.event().name("error").data(data));
                             }
                         }
                         emitter.send(SseEmitter.event().name(event).data(data));
-                        if ("done".equals(event)) {
-                            // 落库并回传会话 id(新建会话时前端需要它续聊——多轮对话闭环)
+                        if ("done".equals(event) && !errored[0]) {
+                            // I4:错误轮跳过——空消息落库/空回答缓存会污染历史与后续命中
                             Long cid = save(conversationId, question, answer.toString());
                             try {
                                 emitter.send(SseEmitter.event().name("conversation")
                                         .data("{\"seq\":999,\"data\":{\"conversationId\":" + cid + "}}"));
                             } catch (Exception ignored) { }
+                            observabilityService.saveSpan(cid, question,
+                                System.currentTimeMillis() - t0, phaseMs, false);
+                            try {
+                                chatCache.put(question, answer.toString(),
+                                        sourcesJson[0] == null ? "[]" : sourcesJson[0]);
+                            } catch (Exception ignored) { }
+                        }
+                        if ("done".equals(event)) {
                             emitter.complete();
                         }
                     } catch (Exception e) {
@@ -118,6 +166,7 @@ public class AgentChatService {
     }
 
     /** 落库 user/assistant;返回会话 id(conversationId 为 null 时新建并返回新 id)。 */
+    @Transactional
     private Long save(Long conversationId, String user, String assistant) {
         if (conversationId == null) {
             Conversation c = new Conversation();
@@ -132,15 +181,5 @@ public class AgentChatService {
         messages.save(m1);
         messages.save(m2);
         return conversationId;
-    }
-
-    private void emitCacheAnswer(ChatCacheService.CacheHit hit, SseEmitter emitter) {
-        try {
-            emitter.send(SseEmitter.event().name("cache_hit").data("{\"seq\":1,\"data\":true}"));
-            emitter.send(SseEmitter.event().name("answer").data("{\"seq\":2,\"data\":" + om.writeValueAsString(hit.answer()) + "}"));
-            emitter.send(SseEmitter.event().name("source").data("{\"seq\":3,\"data\":" + hit.sourcesJson() + "}"));
-            emitter.send(SseEmitter.event().name("done").data("{\"seq\":4,\"data\":null}"));
-            emitter.complete();
-        } catch (Exception e) { emitter.completeWithError(e); }
     }
 }

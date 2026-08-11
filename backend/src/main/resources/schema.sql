@@ -53,6 +53,20 @@ CREATE TABLE IF NOT EXISTS tool_call_log (
     created_at      TIMESTAMP(6)
 );
 
+CREATE TABLE IF NOT EXISTS rag_span (
+    id              BIGSERIAL PRIMARY KEY,
+    conversation_id BIGINT,
+    question        TEXT,
+    gateway_ms      INT,
+    rewrite_ms      INT,
+    router_ms       INT,
+    tools_ms        INT,
+    generate_ms     INT,
+    verify_ms       INT,
+    cache_hit       BOOLEAN,
+    created_at      TIMESTAMP(6)
+);
+
 CREATE INDEX IF NOT EXISTS idx_chunk_fts  ON document_chunk USING gin (search_text);
 CREATE INDEX IF NOT EXISTS idx_chunk_hnsw ON document_chunk USING hnsw (embedding vector_cosine_ops);
 

@@ -51,15 +51,18 @@ def execute_tool(name: str, args: dict, client: JavaClient | None = None) -> str
     client = client or JavaClient()
     try:
         raw = _FUNC_MAP[name](client, args)
+        if isinstance(raw, dict) and raw.get("idempotent"):
+            # Java 幂等命中:复用上次结果摘要,不重复执行(双层幂等防线)
+            return f"(幂等命中,复用上次结果) {raw.get('output', '')}"
+        if isinstance(raw, list):
+            if not raw:
+                return "知识库中未检索到相关内容。"
+            lines = []
+            for i, hit in enumerate(raw, 1):
+                content = (hit.get("content") or "")[:500]      # content 可能为 null,防御(P5-4)
+                heading = hit.get("headingPath") or ""
+                lines.append(f"[{i}] 片段ID={hit.get('chunkId')} 文档ID={hit.get('docId')} 标题={heading}\n{content}")
+            return "\n\n".join(lines)
+        return str(raw)
     except Exception as e:
         return f"[工具 {name} 执行失败] {e}"
-    if isinstance(raw, list):
-        if not raw:
-            return "知识库中未检索到相关内容。"
-        lines = []
-        for i, hit in enumerate(raw, 1):
-            lines.append(
-                f"[{i}] 片段ID={hit.get('chunkId')} 文档ID={hit.get('docId')} 标题={hit.get('headingPath')}\n{hit.get('content', '')[:500]}"
-            )
-        return "\n\n".join(lines)
-    return str(raw)

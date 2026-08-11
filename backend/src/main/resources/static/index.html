@@ -20,7 +20,10 @@ async function ask() {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({message: q, conversationId: CONVERSATION_ID})
   });
-  if (!resp.ok) { out.textContent = '请求失败(' + resp.status + '): ' + await resp.text(); return; }   // 限流 429 提示
+  if (!resp.ok) {
+    out.textContent = resp.status === 429 ? '请求过于频繁,请稍后再试' : '请求失败(' + resp.status + '): ' + await resp.text();
+    return;
+  }
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '', eventName = '';
@@ -36,7 +39,10 @@ async function ask() {
       else if (line.startsWith('data:')) {
         const ev = JSON.parse(line.slice(5));
         if (eventName === 'answer' && ev.data) out.querySelector('pre').textContent += ev.data;
-        else if (eventName === 'conversation') CONVERSATION_ID = ev.data.conversationId;   // 存会话 id,续聊自动带上
+        else if (eventName === 'conversation') CONVERSATION_ID = ev.data.conversationId;
+        else if (eventName === 'regenerate') out.querySelector('pre').textContent = '';   // 重试轮:清空重绘
+        else if (eventName === 'error')
+          out.querySelector('pre').textContent += '\n[错误] ' + (typeof ev.data === 'string' ? ev.data : JSON.stringify(ev.data));
         else if (eventName === 'source')
           document.getElementById('src').textContent = '来源: ' + ev.data.map(s => s.title).join(' / ');
       }
