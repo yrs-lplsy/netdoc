@@ -14,3 +14,4 @@ class AgentState(TypedDict, total=False):
     verified: bool             # 忠实度自检是否通过
     error: Optional[str]       # 错误信息(自然语言化)
     tool_calls: list           # 本次会话已执行调用记录(重复检测依据)
+    kb_id: Optional[int]       # 多库隔离上下文,工具调用携带

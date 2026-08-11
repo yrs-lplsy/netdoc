@@ -58,12 +58,13 @@ public class HybridRetriever {
         List<Long> fused = RrfFusion.fuse(denseIds, sparseIds, rrfK, Math.min(topK, finalTopK));
         if (fused.isEmpty()) return List.of();
         // ANY (?) 不保证返回顺序：回库后按 fused 顺序重排——TopN 的 Prompt 顺序依赖 RRF 排序
-        List<SearchResult> rows = jdbc.query(
-            "SELECT id, doc_id, content, heading_path FROM document_chunk WHERE id = ANY (?)",
-                (rs, i) -> new SearchResult(
-                        rs.getLong("id"), rs.getLong("doc_id"),
-                        rs.getString("content"), rs.getString("heading_path")),
-                fused.toArray(Long[]::new));
+        List<SearchResult> rows = namedJdbc.query(
+            "SELECT id, doc_id, content, heading_path FROM document_chunk WHERE id IN (:ids)",
+            Map.of("ids", fused),
+            (rs, i) -> new SearchResult(
+                    rs.getLong("id"), rs.getLong("doc_id"),
+                    rs.getString("content"), rs.getString("heading_path")));
+
 
         Map<Long, SearchResult> byId = rows.stream()
                 .collect(Collectors.toMap(SearchResult::chunkId, r -> r));

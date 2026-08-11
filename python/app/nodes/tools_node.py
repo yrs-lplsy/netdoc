@@ -20,7 +20,8 @@ async def tools_node(state: AgentState, chat=None, client=None) -> AgentState:
         if client is None:
             from app.java_client import JavaClient
 
-            client = JavaClient(conversation_id=state.get("conversation_id"))
+            client = JavaClient(conversation_id=state.get("conversation_id"),
+                                kb_id=state.get("kb_id"))
             state["_java_client"] = client
     contexts = list(state.get("contexts") or [])
 

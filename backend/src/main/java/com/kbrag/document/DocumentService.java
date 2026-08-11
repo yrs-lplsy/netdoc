@@ -47,12 +47,12 @@ public class DocumentService {
         // MultipartFile 背后是 Tomcat 临时文件，请求结束后会被删除；
         // 必须先在请求线程内把内容读成字节数组，再交给异步线程处理
         byte[] bytes = file.getBytes();
-        self.processAsync(doc.getId(), bytes, file.getOriginalFilename());   // 必须经代理调用，@Async 才生效
+        self.processAsync(doc.getId(), doc.getKbId(), bytes, file.getOriginalFilename());   // 必须经代理调用，@Async 才生效
         return doc;
     }
 
     @Async
-    public void processAsync(Long docId, byte[] content, String filename) {
+    public void processAsync(Long docId, Long kbId, byte[] content, String filename) {
         Document doc = documents.findById(docId).orElseThrow();
         try {
             String text = pickParser(filename).parse(new ByteArrayInputStream(content), filename);
@@ -60,6 +60,7 @@ public class DocumentService {
             List<DocumentChunk> entities = parsed.stream().map(c -> {
                 DocumentChunk e = new DocumentChunk();
                 e.setDocId(docId);
+                e.setKbId(kbId);
                 e.setChunkIndex(c.index());
                 e.setContent(c.content());
                 e.setHeadingPath(c.headingPath());

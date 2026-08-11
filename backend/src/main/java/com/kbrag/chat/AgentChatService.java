@@ -86,6 +86,7 @@ public class AgentChatService {
         history = history.size() > 10 ? history.subList(history.size() - 10, history.size()) : history;
         // 用 HashMap:conversation_id 为 null 时(新会话)Map.of 会 NPE(不可变集合禁止 null)
         Map<String, Object> body = new HashMap<>();
+        body.put("kb_id", kbId);
         body.put("message", question);
         body.put("conversation_id", conversationId);
         body.put("history", history);

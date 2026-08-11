@@ -10,7 +10,7 @@ class JavaClient:
     conversation_id 非空时,每次调用携带递增 agentStepId → Java 侧幂等键( 双层防线)。"""
 
     def __init__(self, base_url: str = JAVA_BASE_URL, timeout: float = TOOL_TIMEOUT_SECONDS,
-                 conversation_id: int | None = None):
+                 conversation_id: int | None = None, kb_id: int | None = None):
         # 接口基础地址，默认常量 JAVA_BASE_URL
         self.base_url = base_url
         # 请求超时秒数，默认全局超时常量
@@ -19,6 +19,7 @@ class JavaClient:
         self.conversation_id = conversation_id
         self._step = 0
         self._seen: set[tuple[str, str]] = set()
+        self.kb_id = kb_id
 
     def _call(self, tool: str, payload: dict) -> dict:
         key = (tool, json.dumps(payload, sort_keys=True, ensure_ascii=False))
@@ -34,7 +35,10 @@ class JavaClient:
         return r.json()
 
     def search_kb(self, query: str, top_k: int = 5) -> list:
-        return self._call("search", {"query": query, "topK": top_k})
+        payload = {"query": query, "topK": top_k}
+        if self.kb_id is not None:
+            payload["kbId"] = self.kb_id   # Java ToolRequest.kbId 字段名对齐
+        return self._call("search", payload)
 
     def get_doc_detail(self, doc_id: int) -> dict:
         return self._call("get-doc-detail", {"docId": doc_id})

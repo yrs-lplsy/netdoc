@@ -10,6 +10,7 @@ class AgentChatRequest(BaseModel):
     message: str
     conversation_id: int | None = None
     history: list[dict] = []
+    kb_id: int | None = None
 
 
 def build_input(req: AgentChatRequest) -> dict:
@@ -17,6 +18,7 @@ def build_input(req: AgentChatRequest) -> dict:
         "question": req.message,
         "history": req.history[-10:],
         "conversation_id": req.conversation_id,   # 工具幂等键上下文
+        "kb_id": req.kb_id,                       # 多库隔离上下文
         "needs_retrieval": True,
         "contexts": [],
         "answer": "",
