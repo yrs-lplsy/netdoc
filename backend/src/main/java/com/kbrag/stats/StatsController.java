@@ -5,6 +5,7 @@ import com.kbrag.document.DocumentRepository;
 import com.kbrag.obs.RagSpan;
 import com.kbrag.obs.RagSpanRepository;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -13,6 +14,7 @@ import java.util.Map;
 
 /**
  * 知识库统计(spec §7 GET /api/stats):文档/分块数、平均检索耗时、缓存命中率。
+ * 功能权限:STATS_VIEW(ADMIN/AGENT_SERVICE 持有)。
  */
 @RestController
 public class StatsController {
@@ -21,6 +23,7 @@ public class StatsController {
     @Autowired private RagSpanRepository spans;
 
     @GetMapping("/api/stats")
+    @PreAuthorize("hasAuthority('STATS_VIEW')")
     public Map<String, Object> stats() {
         List<RagSpan> recent = spans.findTop100ByOrderByIdDesc();
         double avgTools = recent.stream().mapToInt(RagSpan::getToolsMs)

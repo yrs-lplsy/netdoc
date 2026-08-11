@@ -24,8 +24,8 @@ public class SecurityConfig {
         http.csrf(csrf -> csrf.disable())
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/api/auth/login", "/api/agent/health", "/actuator/health",
-                                "/", "/index.html", "/static/**", "/favicon.ico", "/api/agent/tools/**").permitAll()
+                        .requestMatchers("/api/auth/login", "/api/agent/health", "/actuator/health", "/error",
+                                "/", "/index.html", "/static/**", "/favicon.ico").permitAll()
                         .anyRequest().authenticated())
                 // 未认证统一 401(Spring Security 6 默认 403,与计划验证期望不符)
                 .exceptionHandling(e -> e.authenticationEntryPoint((req, res, ex) -> {

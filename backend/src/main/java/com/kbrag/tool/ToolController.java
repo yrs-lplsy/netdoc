@@ -1,6 +1,7 @@
 package com.kbrag.tool;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kbrag.auth.KbAccess;
 import com.kbrag.document.Document;
 import com.kbrag.document.DocumentChunk;
 import com.kbrag.document.DocumentChunkRepository;
@@ -8,6 +9,7 @@ import com.kbrag.document.DocumentRepository;
 import com.kbrag.retrieval.HybridRetriever;
 import com.kbrag.retrieval.SearchResult;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -17,9 +19,11 @@ import java.util.Optional;
 /**
  * Agent 工具端点(spec §4.1 tool-service):供 Python Agent 服务反向调用。
  * 每次调用全量落库 tool_call_log(安全审计)+ 幂等键防重复执行(spec §9)。
+ * 双层权限:@PreAuthorize 功能权限(仅 AGENT_SERVICE)+ @KbAccess 数据权限(spec §5.1)。
  */
 @RestController
 @RequestMapping("/api/agent/tools")
+@PreAuthorize("hasRole('AGENT_SERVICE')")
 public class ToolController {
     @Autowired private HybridRetriever retriever;
     @Autowired private DocumentRepository documents;
@@ -32,7 +36,7 @@ public class ToolController {
      * @param req
      * @return
      */
-    @PostMapping("/search")
+    @PostMapping("/search") @KbAccess("READ")
     public Object search(@RequestBody ToolRequest req) {
         Optional<Object> dup = idempotent(req);
         if (dup.isPresent()) return dup.get();
@@ -52,7 +56,7 @@ public class ToolController {
      * @param req
      * @return
      */
-    @PostMapping("/get-doc-detail")
+    @PostMapping("/get-doc-detail") @KbAccess("READ")
     public Object getDocDetail(@RequestBody ToolRequest req) {
         Optional<Object> dup = idempotent(req);
         if (dup.isPresent()) return dup.get();
@@ -78,7 +82,7 @@ public class ToolController {
      * @param req
      * @return
      */
-    @PostMapping("/get-stats")
+    @PostMapping("/get-stats") @KbAccess("READ")
     public Object getStats(@RequestBody ToolRequest req) {
         Optional<Object> dup = idempotent(req);
         if (dup.isPresent()) return dup.get();

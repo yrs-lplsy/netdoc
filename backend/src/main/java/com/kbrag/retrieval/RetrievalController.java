@@ -3,6 +3,8 @@ package com.kbrag.retrieval;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
+import com.kbrag.auth.KbAccess;
+
 import java.util.List;
 
 @RestController
@@ -10,7 +12,7 @@ import java.util.List;
 public class RetrievalController {
     @Autowired HybridRetriever retriever;
 
-    @PostMapping
+    @PostMapping @KbAccess("READ")
     public List<SearchResult> retrieve(@RequestBody RetrieveRequest req, @RequestParam Long kbId) {
         return retriever.search(req.query(), kbId, req.topK() == 0 ? 5 : req.topK());
     }

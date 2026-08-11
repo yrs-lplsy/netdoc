@@ -99,6 +99,14 @@ CREATE TABLE IF NOT EXISTS knowledge_base (
     created_at  TIMESTAMP(6)
 );
 
+CREATE TABLE IF NOT EXISTS role_kb_access (
+    id BIGSERIAL PRIMARY KEY,
+    role_id BIGINT,
+    kb_id BIGINT,
+    access VARCHAR(255),
+    CONSTRAINT uk_role_kb UNIQUE (role_id, kb_id)
+);
+
 -- 三张旧表加 kb_id 列(幂等写法,兼容已存在的旧库):
 ALTER TABLE document ADD COLUMN IF NOT EXISTS kb_id BIGINT;
 ALTER TABLE document_chunk ADD COLUMN IF NOT EXISTS kb_id BIGINT;

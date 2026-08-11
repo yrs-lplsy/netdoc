@@ -15,6 +15,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import com.kbrag.ratelimit.RateLimiter;
 import com.kbrag.agent.*;
+import com.kbrag.auth.KbAccess;
 
 import jakarta.servlet.http.HttpServletRequest;
 
@@ -27,7 +28,7 @@ public class ChatController {
 
     public record ChatRequest(String message, Long conversationId) {}
 
-    @PostMapping(produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    @PostMapping(produces = MediaType.TEXT_EVENT_STREAM_VALUE) @KbAccess("READ")
     public ResponseEntity<SseEmitter> chat(@RequestBody ChatRequest req, HttpServletRequest http, @RequestParam Long kbId) {
         String userId = clientIp(http);   // 无登录态,用 IP 作为用户标识(登录后换 userId,维度不变)
         if (!rateLimiter.tryAcquire(userId)) {

@@ -20,16 +20,19 @@ class JavaClient:
         self._step = 0
         self._seen: set[tuple[str, str]] = set()
         self.kb_id = kb_id
+        self._token = None
 
     def _call(self, tool: str, payload: dict) -> dict:
         key = (tool, json.dumps(payload, sort_keys=True, ensure_ascii=False))
         if key in self._seen:
             raise RuntimeError(f"工具 {tool} 已用相同参数调用过,已跳过重复调用")
+        self._ensure_token()
         if self.conversation_id is not None:
             self._step += 1
             payload = {**payload, "conversationId": self.conversation_id, "agentStepId": self._step}
         with httpx.Client(timeout=self.timeout) as client:
-            r = client.post(f"{self.base_url}/api/agent/tools/{tool}", json=payload)
+            r = client.post(f"{self.base_url}/api/agent/tools/{tool}", json=payload,
+                            headers={"Authorization": f"Bearer {self._token}"})
             r.raise_for_status()
         self._seen.add(key)
         return r.json()
@@ -45,3 +48,14 @@ class JavaClient:
 
     def get_stats(self) -> dict:
         return self._call("get-stats", {})
+
+    def _ensure_token(self) -> None:
+        if self._token:
+            return
+        with httpx.Client(timeout=self.timeout) as c:
+            r = c.post(f"{self.base_url}/api/auth/login",
+                    json={"username": AGENT_USERNAME, "password": AGENT_PASSWORD})
+            r.raise_for_status()
+            self._token = r.json()["token"]
+    
+    

@@ -14,6 +14,8 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
+import com.kbrag.auth.KbAccess;
+
 @RestController
 @RequestMapping("/api/documents")
 public class DocumentController {
@@ -21,7 +23,7 @@ public class DocumentController {
     @Autowired private DocumentRepository documents;
     @Autowired private DocumentChunkRepository chunks;
 
-    @PostMapping
+    @PostMapping @KbAccess("WRITE")
     public ResponseEntity<?> upload(@RequestParam("file") MultipartFile file, @RequestParam("kbId") Long kbId) {
         try {
             return ResponseEntity.ok(documentService.upload(file, kbId));
@@ -30,7 +32,7 @@ public class DocumentController {
         }
     }
 
-    @GetMapping
+    @GetMapping @KbAccess("READ")
     public List<Document> list(@RequestParam(required = false) String status,
                            @RequestParam(required = false) Long kbId) {
         return documents.findAll().stream()
@@ -40,7 +42,7 @@ public class DocumentController {
     }
 
     @DeleteMapping("/{id}")
-    @Transactional
+    @Transactional @KbAccess("WRITE")
     public void delete(@PathVariable Long id) {
         chunks.deleteByDocId(id);   // 注入 DocumentChunkRepository
         documents.deleteById(id);

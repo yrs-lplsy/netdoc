@@ -33,8 +33,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 Claims c = jwtUtil.parse(header.substring(7));
                 User u = users.findById(Long.valueOf(c.getSubject())).orElse(null);
                 if (u != null && Boolean.TRUE.equals(u.getEnabled())) {
+                    // ROLE_* 与 permission codes 都进 authorities:@PreAuthorize hasRole/hasAuthority 双可用
                     List<SimpleGrantedAuthority> authorities = u.getRoles().stream()
-                            .map(r -> new SimpleGrantedAuthority("ROLE_" + r.getName()))
+                            .flatMap(r -> java.util.stream.Stream.concat(
+                                    java.util.stream.Stream.of(new SimpleGrantedAuthority("ROLE_" + r.getName())),
+                                    r.getPermissions().stream().map(p -> new SimpleGrantedAuthority(p.getCode()))))
+                            .distinct()
                             .toList();
                     var auth = new UsernamePasswordAuthenticationToken(u, null, authorities);
                     SecurityContextHolder.getContext().setAuthentication(auth);
