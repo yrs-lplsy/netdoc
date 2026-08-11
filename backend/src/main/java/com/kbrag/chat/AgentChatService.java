@@ -125,13 +125,9 @@ public class AgentChatService {
                             // I1:暂存内层 data(引用数组),命中重放时不再二次包装
                             sourcesJson[0] = om.readTree(data).path("data").toString();
                         } else if ("done".equals(event) && data != null) {
-                            // data 形如 {"seq":n,"data":{...}}
-                            boolean verified = om.readTree(data).path("data").path("verified").asBoolean(false);
-                            String error = om.readTree(data).path("data").path("error").asText("");
-                            if (error != null && !error.isEmpty()) {
-                                errored[0] = true;
-                                emitter.send(SseEmitter.event().name("error").data(data));
-                            }
+                            // done 的 error 字段 = 忠实度审查未通过(降级拒答,正常路径),非系统异常;
+                            // 系统异常只会以 error 事件到达(errored 标记),不在 done 里误报
+                            om.readTree(data).path("data").path("verified").asBoolean(false);
                         }
                         emitter.send(SseEmitter.event().name(event).data(data));
                         if ("done".equals(event) && !errored[0]) {
