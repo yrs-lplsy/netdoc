@@ -1643,3 +1643,20 @@ git add -A && git commit -m "feat: semantic cache consistency with kb namespace,
 - 权限注解 `@KbAccess` 与切面 `@annotation(kbAccess)` 一致;kbId 一律 query 参数(切面取 request)
 - RrfFusion 重载保持旧签名(Plan A 兼容),三路版 `fuse(List<List<Long>>, k, topN)`
 - kg_relation 通过 KgEntity 表做实体名→id 映射(byName),与 Python 返回的 source/target 名称对应
+
+---
+
+## 修订记录(2026-08-11 审计回写)
+
+> 来源:docs/audits/2026-08-11-code-audit.md(首个里程碑前系统性审计)。审计结论:Agent 工具检索链路三断点 + 授权层零落地,属上线阻塞,修复项映射回本计划 Task。
+
+| # | 问题 | 修复方案 | 所属 Task |
+|---|---|---|---|
+| P-AuditB1 | kbId 未贯穿问答链路:ChatController.stream(kbId 参数未用)→ body 无 kb_id → Python AgentChatRequest 无 kb_id → JavaClient 不带 kbId → ToolController.search 的 kbId=null → `WHERE kb_id = ?` 永远查空 → Agent 全链路"查无资料"拒答 | kbId 全链路透传:ChatRequest→AgentChatService.stream body→Python AgentChatRequest→JavaClient.search_kb(kb_id)→ToolRequest.kbId;工具端点校验 kbId 非空 | Task 2(多知识库改造) |
+| P-AuditB2 | 工具端点 /api/agent/tools/* 仅要求"已登录",Python JavaClient 又不带任何凭证 → 每次工具调用 401;AGENT_SERVICE 账号已建但从未使用 | JavaClient 配 AGENT_SERVICE 长 token 带 Authorization 头;SecurityConfig 对 /api/agent/tools/** 放行 + 服务凭证校验(或内网段隔离) | Task 1(RBAC0 认证) |
+| P-AuditB3 | role_kb_access 表/实体/切面零实现:0 个 @PreAuthorize/@KbAccess;任意登录用户可带任意 kbId 检索/问答/上传/删除,get-doc-detail 按任意 docId 读全文(IDOR) | 按 Task 3 原设计落地:role_kb_access 表 + @KbAccess 切面 + 各业务端点挂载;工具端点加 hasRole("AGENT_SERVICE");/api/stats 加 STATS_VIEW | Task 3(数据权限) |
+| P-AuditB4 | 语义缓存仍为旧签名(无 kbId/版本戳/失效/TTL):跨库相似问题互返答案(数据串流);缓存 hash 无 TTL → Redis 内存无界增长;lookup 每轮 1+200 次 Redis 往返(N+1) | Task 6 原设计落地 + 性能修正:kbId 命名空间 + kbVersion 戳 + 主动失效 + expire 24h;lookup 改 pipeline 批量读 | Task 6(语义缓存一致性) |
+| P-AuditB5 | 限流粒度/信任错误:用 IP(已有 JWT)+ 盲信 X-Forwarded-For 首段可伪造绕过;login/retrieve/upload 无限流;429 无 Retry-After | 限流 key 改 userId;XFF 仅可信代理后采信;login 挂 IP+用户名维度限流;429 带 Retry-After | Task 1(限流随认证落地) |
+| P-AuditB6 | 并发准入缺失:8 固定线程 + 无界队列 + 无拒绝策略;SseEmitter 180s 墙钟入队即倒计时,排队超时任务白跑(embedding/Redis/DB 全做) | 控制器层 Semaphore(目标并发)tryAcquire 失败 503;或 spring.threads.virtual.enabled;有界队列 + 拒绝策略;SSE 心跳 15-30s(Spring 文档:无心跳无法感知断连) | Task 1(弹性) |
+| P-AuditB7 | @Async 用 Boot 默认 applicationTaskExecutor(core=8, max 无界, 队列无界):并发上传线程/队列无上限;上传无显式大小限制 | 自定义 ThreadPoolTaskExecutor(有界)+ @Async("docExecutor");multipart max-file-size 显式配置 | Task 2(文档管线加固) |
+| P-AuditB8 | HNSW 索引不含 kb_id:pgvector 过滤在近似扫描后,多库下 top-30 可能全属别库 → 召回空/质量下降 | 按 kb 建独立 HNSW 索引或 list 分区(见 pgvector README 多租户建议);ef_search 调优 | Task 5(图谱检索三路融合) |

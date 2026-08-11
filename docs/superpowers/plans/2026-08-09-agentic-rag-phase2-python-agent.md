@@ -2270,6 +2270,11 @@ git add -A && git commit -m "feat: per-turn rag spans and stats endpoint"
 | P5-8 | Task 5 的 ChatController 代码块引用 **Task 7 才创建的 AgentChatService**,且 `contentType(MediaType.TEXT_EVENT_STREAM_VALUE)` 用了 String 常量(编译不过),照抄必失败 | Task 5 Step 6:补完整 import + 前置依赖标注(Java 侧 Task 5/7 同批完成);contentType 改 `MediaType.TEXT_EVENT_STREAM`;Task 7 Step 6 改为"确认不改"(ChatController 已在 Task 5 完成) |
 | P5-9 | Task 8 Step 6 引用 Task 9 的 ObservabilityService,单独做 Task 8 编译不过 | 去掉 `observabilityService.saveSpan` 调用,标注"命中计数由 Task 9 接入";Task 8 依赖边界:只依赖 Task 5 + Phase 1,不依赖 Task 9 |
 | P5-10 | `redis.execute(script, keys, args...)` 的 args 是可变参数,plan 把 `List.of(...)` 整体传入被当成单个 args[0],StringRedisSerializer 序列化 List 抛 ClassCastException(限流 500) | Task 5 Step 5:args 逐个展开传入;运行期验证过(6 连发应 200×3 + 429×3) |
+| P-Audit1 | HybridRetriever 回库查询 `WHERE id = ANY (?)` 传 `fused.toArray(Long[]::new)` 被 JdbcTemplate 当 varargs 展开成 N 个绑定参数,SQL 只有 1 个占位符 → 必然 PSQLException(500);N=1 绑标量给 ANY 同样报错。直连 /api/retrieve 全部失败 | 2026-08-11 代码审计(见 docs/audits/2026-08-11-code-audit.md)。修法:`namedJdbc.query(sql, Map.of("ids", fused), ...)` 或 `jdbc.query(sql, mapper, (Object) fused.toArray(...))`;补端到端检索测试 |
+| P-Audit2 | double-done 契约(sse.py 正常 done + finally 兜底 done)下,Java 对每个 done 都执行 save()/saveSpan/chatCache.put → 每轮成功问答重复落库 2 条 user+2 条 assistant、2 条 rag_span、2 份缓存 | Task 7 Step:Java 端 doneHandled 标志去重(仅首个 done 落库);或 Python 仅异常路径发兜底 done |
+| P-Audit3 | done 事件 verified 字段读出即丢:忠实度 FAIL(give_up)回答照常落库+写缓存 → 未验证答案可被缓存重放(投毒) | Task 7 Step:verified=false 时不写缓存;落库时标记或跳过 |
+| P-Audit4 | JWT 过滤器每请求 `users.findById` + EAGER roles/permissions 两级展开 ≈2-3 条 SQL/请求;permissions 实际未用 | Task 9/弹性:roles 写进 JWT claims(已生成),过滤器免 DB 查库;roles 改 LAZY |
+| P-Audit5 | message 表无 (conversation_id, id) 索引 + 历史整表加载再内存截 10 条 | schema.sql 加索引;findTop10ByConversationIdOrderByIdDesc |
 
 ## Self-Review 记录
 
