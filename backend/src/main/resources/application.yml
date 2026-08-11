@@ -41,3 +41,6 @@ app:
   cache:
     similarity-threshold: 0.95   # 命中阈值(spec §8)
     recent-max: 200              # 候选集上限(算余弦的条目数)
+  jwt:
+    secret: netdoc-demo-jwt-secret-please-change-in-prod-0123456789abcdef   # ≥32 字节(HS256)
+    expire-hours: 24
