@@ -107,6 +107,31 @@ CREATE TABLE IF NOT EXISTS role_kb_access (
     CONSTRAINT uk_role_kb UNIQUE (role_id, kb_id)
 );
 
+-- Task 4:知识图谱(KgEntity/KgRelation 实体注解 @Table 索引与 DDL 对应)
+CREATE TABLE IF NOT EXISTS kg_entity (
+    id BIGSERIAL PRIMARY KEY,
+    kb_id BIGINT,
+    name VARCHAR(255),
+    type VARCHAR(255),
+    normalized_name VARCHAR(255),
+    doc_id BIGINT,
+    embedding vector(1024),          -- 实体向量,Task 4 先不填,留升级位
+    confidence DOUBLE PRECISION,
+    created_at TIMESTAMP(6)
+);
+CREATE INDEX IF NOT EXISTS idx_kg_entity_name ON kg_entity (kb_id, name);
+
+CREATE TABLE IF NOT EXISTS kg_relation (
+    id BIGSERIAL PRIMARY KEY,
+    kb_id BIGINT,
+    source_id BIGINT,
+    target_id BIGINT,
+    relation VARCHAR(255),
+    confidence DOUBLE PRECISION,
+    created_at TIMESTAMP(6)
+);
+CREATE INDEX IF NOT EXISTS idx_kg_rel_src ON kg_relation (kb_id, source_id);
+
 -- 三张旧表加 kb_id 列(幂等写法,兼容已存在的旧库):
 ALTER TABLE document ADD COLUMN IF NOT EXISTS kb_id BIGINT;
 ALTER TABLE document_chunk ADD COLUMN IF NOT EXISTS kb_id BIGINT;

@@ -18,7 +18,11 @@ import com.kbrag.document.parser.HeadingAwareChunker;
 import com.kbrag.document.parser.MarkdownParser;
 import com.kbrag.document.parser.PdfParser;
 import com.kbrag.document.parser.WordParser;
+import com.kbrag.kg.KgService;
 
+import lombok.extern.slf4j.Slf4j;
+
+@Slf4j
 @Service
 public class DocumentService {
     @Autowired DocumentRepository documents;
@@ -30,6 +34,9 @@ public class DocumentService {
 
     @Autowired
     private Tokenizer tokenizer;
+
+    @Autowired
+    private KgService kgService;
 
     private final HeadingAwareChunker chunker;
     private static final int MAX_SIZE = 800, MIN_SIZE = 400, OVERLAP = 100;
@@ -75,6 +82,13 @@ public class DocumentService {
                 entities.get(i).setSegmentedText(tokenizer.segment(entities.get(i).getContent()));
             }
             chunks.saveAll(entities);
+            try {
+                kgService.extractAndSave(kbId, docId,
+                        parsed.stream().map(Chunk::content).toList());
+            } catch (Exception ex) {
+                log.warn("KG extraction failed for doc {}: {}", docId, ex.getMessage());
+            }
+
             doc.setStatus(DocumentStatus.READY);
         } catch (Exception ex) {
             doc.setStatus(DocumentStatus.FAILED);

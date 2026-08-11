@@ -13,3 +13,7 @@ def health():
 @app.post("/agent/chat")
 async def agent_chat(req: AgentChatRequest):
     return EventSourceResponse(event_stream(req), headers={"Cache-Control": "no-cache"})
+
+from app.extract import router as extract_router
+
+app.include_router(extract_router)
