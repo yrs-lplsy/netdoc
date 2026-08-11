@@ -67,6 +67,31 @@ CREATE TABLE IF NOT EXISTS rag_span (
     created_at      TIMESTAMP(6)
 );
 
+-- schema.sql 追加(幂等)
+CREATE TABLE IF NOT EXISTS usr (
+    id BIGSERIAL PRIMARY KEY,
+    username VARCHAR(255) UNIQUE,
+    password_hash VARCHAR(255),
+    enabled BOOLEAN,
+    created_at TIMESTAMP(6)
+);
+CREATE TABLE IF NOT EXISTS role (
+    id BIGSERIAL PRIMARY KEY,
+    name VARCHAR(255) UNIQUE
+);
+CREATE TABLE IF NOT EXISTS user_role (
+    user_id BIGINT, role_id BIGINT
+);
+CREATE TABLE IF NOT EXISTS permission (
+    id BIGSERIAL PRIMARY KEY,
+    code VARCHAR(255) UNIQUE
+);
+CREATE TABLE IF NOT EXISTS role_permission (
+    role_id BIGINT, permission_id BIGINT
+);
+
+
+
 CREATE INDEX IF NOT EXISTS idx_chunk_fts  ON document_chunk USING gin (search_text);
 CREATE INDEX IF NOT EXISTS idx_chunk_hnsw ON document_chunk USING hnsw (embedding vector_cosine_ops);
 

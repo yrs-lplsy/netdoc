@@ -17,6 +17,7 @@ public class DataInitializer implements CommandLineRunner {
     @Autowired private UserRepository users;
     @Autowired private RoleRepository roles;
     @Autowired private PasswordEncoder passwordEncoder;
+    @Autowired private PermissionRepository permissions;
 
     @Override
     public void run(String... args) {
@@ -30,7 +31,25 @@ public class DataInitializer implements CommandLineRunner {
         user("agent-service", agent, "agent-secret-123");
     }
 
-    private Permission perm(String code) { return null; } // TODO 由用户补全(见下)
-    private Role role(String name, Set<Permission> ps) { return null; }
-    private void user(String name, Role r, String pwd) {}
+    // DataInitializer 三个私有方法的标准 JPA 写法(先查后建,幂等)
+    private Permission perm(String code) {
+        return permissions.findByCode(code).orElseGet(() -> {
+            Permission p = new Permission();
+            p.setCode(code);
+            return permissions.save(p);
+        });
+    }
+    private Role role(String name, Set<Permission> ps) {
+        Role r = roles.findByName(name).orElseGet(Role::new);
+        r.setName(name);
+        r.setPermissions(ps);
+        return roles.save(r);
+    }
+    private void user(String name, Role r, String pwd) {
+        User u = new User();
+        u.setUsername(name);
+        u.setPasswordHash(passwordEncoder.encode(pwd));
+        u.setRoles(Set.of(r));
+        users.save(u);
+    }
 }
