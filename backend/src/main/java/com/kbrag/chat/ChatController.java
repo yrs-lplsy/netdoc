@@ -14,7 +14,6 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import com.kbrag.ratelimit.RateLimiter;
-import com.kbrag.agent.*;
 import com.kbrag.auth.KbAccess;
 
 import jakarta.servlet.http.HttpServletRequest;
@@ -35,7 +34,14 @@ public class ChatController {
             return ResponseEntity.status(429).build();   // 无 body(类型安全);文案由前端按状态码显示
         }
         SseEmitter emitter = new SseEmitter(180_000L);
-        executor.execute(() -> agentChatService.stream(req.message(), kbId, req.conversationId(), emitter));
+        executor.execute(() -> {
+            try{
+                agentChatService.stream(req.message(), kbId, req.conversationId(), emitter);
+            } catch (Exception e) {
+                // 捕获异常，明确告诉客户端 SSE 连接发生错误并关闭
+                emitter.completeWithError(e);
+            }
+        });
         return ResponseEntity.ok().body(emitter);
     }
 
