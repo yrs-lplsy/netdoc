@@ -1,5 +1,6 @@
 package com.kbrag.auth;
 
+import jakarta.servlet.DispatcherType;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
@@ -24,6 +25,8 @@ public class SecurityConfig {
         http.csrf(csrf -> csrf.disable())
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
+                        // SSE/异步分发与错误页转发不重复鉴权(主请求已鉴权;否则 async dispatch 抛 AccessDenied)
+                        .dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll()
                         .requestMatchers("/api/auth/login", "/api/agent/health", "/actuator/health", "/error",
                                 "/", "/index.html", "/static/**", "/favicon.ico").permitAll()
                         .anyRequest().authenticated())

@@ -48,8 +48,12 @@ async def event_stream(req: AgentChatRequest) -> AsyncIterator[dict]:
             elif kind == "sources":
                 yield emit("source", payload)
             elif kind == "done":
-                yield emit("done", {"verified": payload["verified"], "error": payload["error"]})
+                yield emit("done", {"answer": payload.get("answer", ""),   # 拒答/直答文本透传,Java 补发用
+                        "verified": payload["verified"], "error": payload["error"]})
+                
     except Exception as e:
+        import traceback
+        traceback.print_exc() # uvicorn 控制台会打出完整堆栈
         yield emit("error", f"Agent 服务异常:{e}")
     finally:
         yield emit("done", None)

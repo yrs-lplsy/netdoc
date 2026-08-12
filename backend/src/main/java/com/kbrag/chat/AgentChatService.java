@@ -102,6 +102,7 @@ public class AgentChatService {
         Map<String, Integer> phaseMs = new HashMap<>();   // 各阶段耗时(供 Task 9 可观测落库)
         String[] sourcesJson = {null};                    // source 事件暂存(lambda 内可变,缓存写入用)
         boolean[] errored = {false};                      // 本轮是否出错(错误轮跳过落库/写缓存)
+        boolean[] doneHandled = {false};                  // done 去重
         stream.subscribe(
                 sse -> {
                     try {
@@ -130,12 +131,22 @@ public class AgentChatService {
                             // I1:暂存内层 data(引用数组),命中重放时不再二次包装
                             sourcesJson[0] = om.readTree(data).path("data").toString();
                         } else if ("done".equals(event) && data != null) {
+                            JsonNode d = om.readTree(data).path("data");
+                            // 拒答/直答路径:answer 未流式,补发一次(否则前端无任何显示)
+                            String finalAnswer = d.path("answer").asText("");
+                            if (answer.length() == 0 && !finalAnswer.isEmpty()) {
+                                emitter.send(SseEmitter.event().name("answer")
+                                        .data("{\"seq\":98,\"data\":" + om.writeValueAsString(finalAnswer) + "}"));
+                                answer.append(finalAnswer);
+                            }
                             // done 的 error 字段 = 忠实度审查未通过(降级拒答,正常路径),非系统异常;
                             // 系统异常只会以 error 事件到达(errored 标记),不在 done 里误报
-                            om.readTree(data).path("data").path("verified").asBoolean(false);
+                            d.path("verified").asBoolean(false);
                         }
                         emitter.send(SseEmitter.event().name(event).data(data));
                         if ("done".equals(event) && !errored[0]) {
+                            if (doneHandled[0]) { emitter.complete(); return; }  // 兜底 done 忽略,防双落库
+                            doneHandled[0] = true;
                             // I4:错误轮跳过——空消息落库/空回答缓存会污染历史与后续命中
                             Long cid = save(conversationId, question, answer.toString());
                             try {
@@ -144,10 +155,12 @@ public class AgentChatService {
                             } catch (Exception ignored) { }
                             observabilityService.saveSpan(cid, question,
                                 System.currentTimeMillis() - t0, phaseMs, false);
-                            try {
-                                chatCache.put(question, answer.toString(),
+                            if (answer.length() > 0) {   // 空答案(拒答/失败轮)不写缓存,防缓存投毒(P-Audit3)
+                                try {
+                                    chatCache.put(question, answer.toString(),
                                         sourcesJson[0] == null ? "[]" : sourcesJson[0]);
-                            } catch (Exception ignored) { }
+                                } catch (Exception ignored) { }
+                            }
                         }
                         if ("done".equals(event)) {
                             emitter.complete();

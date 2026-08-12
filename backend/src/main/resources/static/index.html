@@ -86,39 +86,43 @@ async function ask() {
   const q = document.getElementById('q').value;
   const out = document.getElementById('out');
   out.innerHTML = '<pre></pre><div id="src"></div>';
-//chat 请求拼 kbId(query 参数,与后端契约一致)
-const resp = await fetch('/api/chat?kbId=2', {
-  method: 'POST',
-  headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + TOKEN},
-  body: JSON.stringify({message: msg.value})
-});
-  if (!resp.ok) {
-    out.textContent = resp.status === 429 ? '请求过于频繁,请稍后再试' : '请求失败(' + resp.status + '): ' + await resp.text();
-    return;
-  }
-  const reader = resp.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '', eventName = '';
-  while (true) {
-    const {done, value} = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, {stream: true});
-    let idx;
-    while ((idx = buffer.indexOf('\n')) >= 0) {
-      const line = buffer.slice(0, idx).trim();
-      buffer = buffer.slice(idx + 1);
-      if (line.startsWith('event:')) eventName = line.slice(6).trim();
-      else if (line.startsWith('data:')) {
-        const ev = JSON.parse(line.slice(5));
-        if (eventName === 'answer' && ev.data) out.querySelector('pre').textContent += ev.data;
-        else if (eventName === 'conversation') CONVERSATION_ID = ev.data.conversationId;
-        else if (eventName === 'regenerate') out.querySelector('pre').textContent = '';   // 重试轮:清空重绘
-        else if (eventName === 'error')
-          out.querySelector('pre').textContent += '\n[错误] ' + (typeof ev.data === 'string' ? ev.data : JSON.stringify(ev.data));
-        else if (eventName === 'source')
-          document.getElementById('src').textContent = '来源: ' + ev.data.map(s => s.title).join(' / ');
+  //chat 请求拼 kbId(query 参数,与后端契约一致)
+  try{
+    const resp = await fetch('/api/chat?kbId=2', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + TOKEN},
+      body: JSON.stringify({message: q})
+    });
+    if (!resp.ok) {
+      out.textContent = resp.status === 429 ? '请求过于频繁,请稍后再试' : '请求失败(' + resp.status + '): ' + await resp.text();
+      return;
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '', eventName = '';
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, {stream: true});
+      let idx;
+      while ((idx = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, idx).trim();
+        buffer = buffer.slice(idx + 1);
+        if (line.startsWith('event:')) eventName = line.slice(6).trim();
+        else if (line.startsWith('data:')) {
+          const ev = JSON.parse(line.slice(5));
+          if (eventName === 'answer' && ev.data) out.querySelector('pre').textContent += ev.data;
+          else if (eventName === 'conversation') CONVERSATION_ID = ev.data.conversationId;
+          else if (eventName === 'regenerate') out.querySelector('pre').textContent = '';   // 重试轮:清空重绘
+          else if (eventName === 'error')
+            out.querySelector('pre').textContent += '\n[错误] ' + (typeof ev.data === 'string' ? ev.data : JSON.stringify(ev.data));
+          else if (eventName === 'source')
+            document.getElementById('src').textContent = '来源: ' + ev.data.map(s => s.title).join(' / ');
+        }
       }
     }
+  } catch (e) {
+    out.querySelector('pre').textContent += '\n[错误] ' + e.message;
   }
 }
 </script>

@@ -2,7 +2,7 @@ import json
 
 import httpx
 
-from app.config import JAVA_BASE_URL, TOOL_TIMEOUT_SECONDS
+from app.config import AGENT_PASSWORD, AGENT_USERNAME, JAVA_BASE_URL, TOOL_TIMEOUT_SECONDS
 
 
 class JavaClient:
@@ -10,7 +10,7 @@ class JavaClient:
     conversation_id 非空时,每次调用携带递增 agentStepId → Java 侧幂等键( 双层防线)。"""
 
     def __init__(self, base_url: str = JAVA_BASE_URL, timeout: float = TOOL_TIMEOUT_SECONDS,
-                 conversation_id: int | None = None, kb_id: int | None = None):
+                 conversation_id: int | None = None, kb_id: int | None = None, token=None):
         # 接口基础地址，默认常量 JAVA_BASE_URL
         self.base_url = base_url
         # 请求超时秒数，默认全局超时常量
@@ -20,7 +20,7 @@ class JavaClient:
         self._step = 0
         self._seen: set[tuple[str, str]] = set()
         self.kb_id = kb_id
-        self._token = None
+        self._token = token          # agent-service 长期 token
 
     def _call(self, tool: str, payload: dict) -> dict:
         key = (tool, json.dumps(payload, sort_keys=True, ensure_ascii=False))
@@ -30,9 +30,14 @@ class JavaClient:
         if self.conversation_id is not None:
             self._step += 1
             payload = {**payload, "conversationId": self.conversation_id, "agentStepId": self._step}
+        # kbId 走 query 参数:@KbAccess 切面从 HttpServletRequest 统一取(Global Constraints),body 里的切面看不到
+        url = f"{self.base_url}/api/agent/tools/{tool}"
+        if self.kb_id is not None:
+            url += f"?kbId={self.kb_id}"
+        headers = {"Authorization": f"Bearer {self._token}"} if self._token else {}
+        params = {"kbId": self.kb_id} if self.kb_id is not None else {}   # 切面从 query 取
         with httpx.Client(timeout=self.timeout) as client:
-            r = client.post(f"{self.base_url}/api/agent/tools/{tool}", json=payload,
-                            headers={"Authorization": f"Bearer {self._token}"})
+            r = client.post(url, json=payload, headers=headers, params=params)
             r.raise_for_status()
         self._seen.add(key)
         return r.json()

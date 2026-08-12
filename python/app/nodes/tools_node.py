@@ -1,4 +1,5 @@
 from app.state import AgentState
+from app.extract import _extract_graph_context
 
 TOOLS_SYSTEM = (
     "你是网络设备技术文档问答助手。回答技术问题前必须调用 search_kb 检索知识库;"
