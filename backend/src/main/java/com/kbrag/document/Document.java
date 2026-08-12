@@ -23,4 +23,5 @@ public class Document {
     @Column(columnDefinition = "text")   // 错误信息可能很长,不能用默认 varchar(255)
     private String errorMessage;
     private LocalDateTime createdAt = LocalDateTime.now();
+    private LocalDateTime updatedAt = LocalDateTime.now();   // 每次保存自动更新(在 Service 更新状态时 set)
 }

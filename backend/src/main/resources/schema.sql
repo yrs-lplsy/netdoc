@@ -136,6 +136,8 @@ CREATE INDEX IF NOT EXISTS idx_kg_rel_src ON kg_relation (kb_id, source_id);
 ALTER TABLE document ADD COLUMN IF NOT EXISTS kb_id BIGINT;
 ALTER TABLE document_chunk ADD COLUMN IF NOT EXISTS kb_id BIGINT;
 ALTER TABLE conversation ADD COLUMN IF NOT EXISTS kb_id BIGINT;
+-- document 加 updated_at(版本戳数据源,Task 6;旧库必须 ALTER,CREATE IF NOT EXISTS 不会加列):
+ALTER TABLE document ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP(6);
 
 --按库查询的索引(检索按 kb_id 过滤时用):
 CREATE INDEX IF NOT EXISTS idx_doc_kb   ON document (kb_id);

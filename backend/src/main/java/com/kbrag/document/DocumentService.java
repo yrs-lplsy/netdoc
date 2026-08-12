@@ -2,6 +2,7 @@ package com.kbrag.document;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.time.LocalDateTime;
 import java.util.List;
 
 import org.springframework.beans.factory.annotation.Autowired;
@@ -10,8 +11,10 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
+import com.fasterxml.jackson.databind.annotation.JsonAppend.Attr;
 import com.kbrag.ai.EmbeddingService;
 import com.kbrag.ai.Tokenizer;
+import com.kbrag.cache.ChatCacheService;
 import com.kbrag.document.parser.Chunk;
 import com.kbrag.document.parser.DocumentParser;
 import com.kbrag.document.parser.HeadingAwareChunker;
@@ -38,6 +41,9 @@ public class DocumentService {
     @Autowired
     private KgService kgService;
 
+    @Autowired
+    private ChatCacheService chatCache;
+
     private final HeadingAwareChunker chunker;
     private static final int MAX_SIZE = 800, MIN_SIZE = 400, OVERLAP = 100;
 
@@ -51,6 +57,7 @@ public class DocumentService {
         doc.setUploader(0L);
         doc.setKbId(kbId);
         documents.save(doc);
+        chatCache.invalidateKb(kbId);              // 新文档使旧缓存失效
         // MultipartFile 背后是 Tomcat 临时文件，请求结束后会被删除；
         // 必须先在请求线程内把内容读成字节数组，再交给异步线程处理
         byte[] bytes = file.getBytes();
@@ -94,6 +101,8 @@ public class DocumentService {
             doc.setStatus(DocumentStatus.FAILED);
             doc.setErrorMessage(ex.getMessage());
         }
+        doc.setUpdatedAt(LocalDateTime.now());     // 版本戳数据源(Step 1)
+        chatCache.invalidateKb(kbId);              // 新增:内容变更使旧缓存失效
         documents.save(doc);
     }
 

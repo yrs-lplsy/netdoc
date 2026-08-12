@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kbrag.cache.ChatCacheService;
 import com.kbrag.chat.ConversationRepository;
 import com.kbrag.chat.MessageRepository;
+import com.kbrag.document.DocumentRepository;
 import com.kbrag.obs.ObservabilityService;
 
 import org.springframework.beans.factory.annotation.Autowired;
@@ -22,6 +23,8 @@ import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.codec.ServerSentEvent;
 
 import java.time.Duration;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -36,6 +39,7 @@ public class AgentChatService {
     private final WebClient webClient;
     private final MessageRepository messages;
     private final ConversationRepository conversations;
+    private final DocumentRepository documents;
     private final ChatCacheService chatCache;
     private final ObjectMapper om = new ObjectMapper();
     @Autowired private ObservabilityService observabilityService;
@@ -43,20 +47,25 @@ public class AgentChatService {
     public AgentChatService(WebClient.Builder builder,
                             MessageRepository messages,
                             ConversationRepository conversations,
+                            DocumentRepository documents,
                             ChatCacheService chatCache,
                             @Value("${app.agent.base-url:http://localhost:9100}") String agentBaseUrl) {
         this.webClient = builder.baseUrl(agentBaseUrl).build();
         this.messages = messages;
         this.conversations = conversations;
+        this.documents = documents;
         this.chatCache = chatCache;
     }
 
     public void stream(String question, Long kbId, Long conversationId, SseEmitter emitter) {
+        Long kbVersion = documents.maxUpdatedAt(kbId)
+            .map(ldt -> ldt.toEpochSecond(ZoneOffset.UTC))   // 方法引用 → lambda
+            .orElse(0L);
         long t0 = System.currentTimeMillis();
         // I3:缓存查询故障(Redis/embedding)降级走 Python 主链路,不挂起
         Optional<ChatCacheService.CacheHit> hit = Optional.empty();
         try {
-            hit = chatCache.lookup(question);
+            hit = chatCache.lookup(question, kbId, kbVersion);
         } catch (Exception e) {
             System.err.println("[cache] lookup failed, degrade to agent: " + e.getMessage());
         }
@@ -103,6 +112,7 @@ public class AgentChatService {
         String[] sourcesJson = {null};                    // source 事件暂存(lambda 内可变,缓存写入用)
         boolean[] errored = {false};                      // 本轮是否出错(错误轮跳过落库/写缓存)
         boolean[] doneHandled = {false};                  // done 去重
+        boolean[] doneVerified = {false};                 // 忠实度自检结果(done 分支 A 赋值,B 用)
         stream.subscribe(
                 sse -> {
                     try {
@@ -141,7 +151,7 @@ public class AgentChatService {
                             }
                             // done 的 error 字段 = 忠实度审查未通过(降级拒答,正常路径),非系统异常;
                             // 系统异常只会以 error 事件到达(errored 标记),不在 done 里误报
-                            d.path("verified").asBoolean(false);
+                            doneVerified[0] = d.path("verified").asBoolean(false);
                         }
                         emitter.send(SseEmitter.event().name(event).data(data));
                         if ("done".equals(event) && !errored[0]) {
@@ -155,10 +165,10 @@ public class AgentChatService {
                             } catch (Exception ignored) { }
                             observabilityService.saveSpan(cid, question,
                                 System.currentTimeMillis() - t0, phaseMs, false);
-                            if (answer.length() > 0) {   // 空答案(拒答/失败轮)不写缓存,防缓存投毒(P-Audit3)
+                            if (answer.length() > 0 && doneVerified[0]) {   // 空答案(拒答/失败轮)不写缓存,防缓存投毒(P-Audit3)
                                 try {
                                     chatCache.put(question, answer.toString(),
-                                        sourcesJson[0] == null ? "[]" : sourcesJson[0]);
+                                        sourcesJson[0] == null ? "[]" : sourcesJson[0], kbId, kbVersion);
                                 } catch (Exception ignored) { }
                             }
                         }

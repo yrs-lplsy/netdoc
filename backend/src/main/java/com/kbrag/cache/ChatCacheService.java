@@ -10,6 +10,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.time.Duration;
 
 /**
  * 语义缓存:hash chat:cache:{id} 存 question/embedding/answer/sourcesJson;
@@ -42,21 +43,21 @@ public class ChatCacheService {
      * @param question
      * @return
      */
-    public Optional<CacheHit> lookup(String question) {
+    public Optional<CacheHit> lookup(String question, Long kbId, Long kbVersion) {
         float[] qv = embeddingService.embed(List.of(question)).get(0);
-        List<String> ids = redis.opsForList().range("chat:cache:recent", 0, -1);
+        List<String> ids = redis.opsForList().range("chat:cache:recent:" + kbId, 0, -1);
         if (ids == null || ids.isEmpty()) return Optional.empty();
         Map<String, float[]> candidates = new LinkedHashMap<>();
         Map<String, String> answers = new LinkedHashMap<>();
         Map<String, String> sources = new LinkedHashMap<>();
         for (String id : ids) {
-            Map<Object, Object> entry = redis.opsForHash().entries("chat:cache:" + id);
+            Map<Object, Object> entry = redis.opsForHash().entries("chat:cache:" + kbId + ":" + id);
             if (entry.isEmpty()) continue;
+            if (!String.valueOf(kbVersion).equals(entry.get("kbVersion"))) continue;  // 版本戳比对:库变了即失效
             candidates.put(id, parseEmbedding((String) entry.get("embedding")));
             answers.put(id, (String) entry.get("answer"));
             sources.put(id, (String) entry.get("sourcesJson"));
         }
-        // 遍历每个 id:读 hash 条目 → 解析 embedding → 收集 candidates/answers/sources
         String best = CosineSimilarity.selectBest(candidates, qv, threshold);
         if (best == null) return Optional.empty();
         return Optional.of(new CacheHit(answers.get(best), sources.get(best)));
@@ -70,16 +71,25 @@ public class ChatCacheService {
      * @param answer
      * @param sourcesJson
      */
-    public void put(String question, String answer, String sourcesJson) {
+    public void put(String question, String answer, String sourcesJson, Long kbId, Long kbVersion) {
         float[] qv = embeddingService.embed(List.of(question)).get(0);
         String id = String.valueOf(System.nanoTime());
-        Map<String, String> entry = Map.of(
+        String key = "chat:cache:" + kbId + ":" + id;
+        redis.opsForHash().putAll(key, Map.of(
                 "question", question, "embedding", toJson(qv),
                 "answer", answer, "sourcesJson", sourcesJson,
-                "ts", String.valueOf(System.currentTimeMillis()));
-        redis.opsForHash().putAll("chat:cache:" + id, entry);
-        redis.opsForList().leftPush("chat:cache:recent", id);
-        redis.opsForList().trim("chat:cache:recent", 0, recentMax - 1);   // 只留最近 recentMax 条
+                "kbVersion", String.valueOf(kbVersion),
+                "ts", String.valueOf(System.currentTimeMillis())));
+        redis.expire(key, Duration.ofHours(24));                     // TTL 兜底(审计 P-Audit7:之前无 TTL,内存无界增长)
+        redis.opsForList().leftPush("chat:cache:recent:" + kbId, id);
+        redis.opsForList().trim("chat:cache:recent:" + kbId, 0, recentMax - 1);
+    }
+
+    /** 主动失效:文档变更后清该 kb 全部缓存条目与索引。 */
+    public void invalidateKb(Long kbId) {
+        List<String> ids = redis.opsForList().range("chat:cache:recent:" + kbId, 0, -1);
+        if (ids != null) ids.forEach(id -> redis.delete("chat:cache:" + kbId + ":" + id));
+        redis.delete("chat:cache:recent:" + kbId);
     }
 
     /**
